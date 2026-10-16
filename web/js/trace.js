@@ -1,0 +1,201 @@
+/* Image -> contours pipeline in pure JS (no dependencies). Mirrors the Python/OpenCV pipeline:
+   gray -> blur -> threshold (manual/Otsu) -> invert -> speckle/pinhole removal -> crack-edge contour tracing
+   (outer boundaries of 8-connected shapes + holes) -> Douglas-Peucker -> min-size filter.
+   Coordinates returned are image pixel-grid coordinates (x right, y down, vertices on pixel corners). */
+(function (root) {
+  "use strict";
+  const MAX_DIM = 2500;
+
+  /** RGBA ImageData-like {data,width,height} -> Uint8Array gray, alpha composited on white (BT.601 like PIL "L"). */
+  function toGray(rgba, w, h) {
+    const g = new Uint8Array(w * h);
+    for (let i = 0, j = 0; i < g.length; i++, j += 4) {
+      const a = rgba[j + 3] / 255;
+      const r = rgba[j] * a + 255 * (1 - a), gg = rgba[j + 1] * a + 255 * (1 - a), b = rgba[j + 2] * a + 255 * (1 - a);
+      g[i] = Math.round(0.299 * r + 0.587 * gg + 0.114 * b);
+    }
+    return g;
+  }
+
+  /** Separable Gaussian, kernel (2r+1), sigma as OpenCV derives it, reflect-101 borders. */
+  function gaussian(src, w, h, radius) {
+    if (!radius) return src;
+    const k = 2 * radius + 1, sigma = 0.3 * ((k - 1) * 0.5 - 1) + 0.8;
+    const ker = new Float32Array(k); let s = 0;
+    for (let i = 0; i < k; i++) { const x = i - radius; ker[i] = Math.exp(-x * x / (2 * sigma * sigma)); s += ker[i]; }
+    for (let i = 0; i < k; i++) ker[i] /= s;
+    const refl = (i, n) => { if (n === 1) return 0; while (i < 0 || i >= n) { if (i < 0) i = -i; if (i >= n) i = 2 * (n - 1) - i; } return i; };
+    const tmp = new Float32Array(w * h), out = new Uint8Array(w * h);
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+      let a = 0; for (let i = 0; i < k; i++) a += ker[i] * src[y * w + refl(x + i - radius, w)];
+      tmp[y * w + x] = a;
+    }
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+      let a = 0; for (let i = 0; i < k; i++) a += ker[i] * tmp[refl(y + i - radius, h) * w + x];
+      out[y * w + x] = Math.max(0, Math.min(255, Math.round(a)));
+    }
+    return out;
+  }
+
+  /** Otsu threshold t: foreground = value <= t (dark). */
+  function otsu(g) {
+    const hist = new Float64Array(256); for (let i = 0; i < g.length; i++) hist[g[i]]++;
+    const total = g.length; let sum = 0; for (let i = 0; i < 256; i++) sum += i * hist[i];
+    let wB = 0, sumB = 0, best = -1, thr = 0;
+    for (let t = 0; t < 256; t++) {
+      wB += hist[t]; if (!wB) continue; const wF = total - wB; if (!wF) break;
+      sumB += t * hist[t]; const mB = sumB / wB, mF = (sum - sumB) / wF;
+      const v = wB * wF * (mB - mF) * (mB - mF);
+      if (v > best) { best = v; thr = t; }
+    }
+    return thr;
+  }
+
+  /** Remove 8-connected components of value 1 with area < minArea (in place). */
+  function removeSmall(m, w, h, minArea) {
+    if (minArea <= 1) return m;
+    const seen = new Uint8Array(m.length), q = new Int32Array(m.length);
+    for (let s = 0; s < m.length; s++) {
+      if (!m[s] || seen[s]) continue;
+      let qh = 0, qt = 0; q[qt++] = s; seen[s] = 1;
+      while (qh < qt) {
+        const p = q[qh++], x = p % w, y = (p / w) | 0;
+        for (let dy = -1; dy <= 1; dy++) { const yy = y + dy; if (yy < 0 || yy >= h) continue;
+          for (let dx = -1; dx <= 1; dx++) { const xx = x + dx; if (xx < 0 || xx >= w) continue;
+            const n = yy * w + xx; if (m[n] && !seen[n]) { seen[n] = 1; q[qt++] = n; } } }
+      }
+      if (qt < minArea) for (let i = 0; i < qt; i++) m[q[i]] = 0;
+    }
+    return m;
+  }
+
+  /** Binary mask, 1 = material. */
+  function binarize(gray, w, h, p) {
+    const g = gaussian(gray, w, h, p.blur | 0);
+    const t = p.auto ? otsu(g) : p.threshold;
+    const m = new Uint8Array(w * h);
+    for (let i = 0; i < m.length; i++) m[i] = (g[i] > t ? 0 : 1) ^ (p.invert ? 1 : 0);
+    if (p.speckle > 0) {
+      removeSmall(m, w, h, p.speckle);                        // specks of foreground
+      for (let i = 0; i < m.length; i++) m[i] ^= 1;
+      removeSmall(m, w, h, p.speckle);                        // pinholes in foreground
+      for (let i = 0; i < m.length; i++) m[i] ^= 1;
+    }
+    return m;
+  }
+
+  const DX = [1, 0, -1, 0], DY = [0, 1, 0, -1];             // E, S, W, N (screen coords, y down)
+
+  /** Crack-edge border following. Returns rings [{pts:Float64Array [x0,y0,x1,y1..], hole:bool, area}]
+      Foreground stays on the left of travel. Foreground is 8-connected, background 4-connected. */
+  function traceRings(m, w, h) {
+    const W = w + 2, H = h + 2;                                // pad with background
+    const P = new Uint8Array(W * H);
+    for (let y = 0; y < h; y++) P.set(m.subarray(y * w, y * w + w), (y + 1) * W + 1);
+    const px = (x, y) => (x < 0 || y < 0 || x >= W || y >= H) ? 0 : P[y * W + x];
+    // pixels left/right of the edge leaving vertex (x,y) in direction d
+    const left = (x, y, d) => d === 0 ? px(x, y - 1) : d === 1 ? px(x, y) : d === 2 ? px(x - 1, y) : px(x - 1, y - 1);
+    const right = (x, y, d) => d === 0 ? px(x, y) : d === 1 ? px(x - 1, y) : d === 2 ? px(x - 1, y - 1) : px(x, y - 1);
+    const VW = W + 1;
+    const visited = new Uint8Array(VW * (H + 1) * 4);
+    const rings = [];
+    for (let y = 0; y <= H; y++) for (let x = 0; x <= W; x++) for (let d0 = 0; d0 < 4; d0++) {
+      if (visited[(y * VW + x) * 4 + d0] || !left(x, y, d0) || right(x, y, d0)) continue;
+      const pts = []; let cx = x, cy = y, d = d0, prev = -1, area2 = 0;
+      for (;;) {
+        visited[(cy * VW + cx) * 4 + d] = 1;
+        if (d !== prev) pts.push(cx - 1, cy - 1);               // record corners only; undo padding
+        prev = d;
+        const nx = cx + DX[d], ny = cy + DY[d];
+        area2 += cx * ny - nx * cy;
+        cx = nx; cy = ny;
+        let nd;
+        if (right(cx, cy, d)) nd = (d + 1) & 3;                 // turn right (keeps 8-connectivity)
+        else if (left(cx, cy, d)) nd = d;
+        else nd = (d + 3) & 3;                                  // turn left
+        d = nd;
+        if (cx === x && cy === y && d === d0) break;
+      }
+      rings.push({ pts: dropCollinear(Float64Array.from(pts)), area2 });
+    }
+    // fg on left in y-down coords: outer boundaries have negative shoelace sum, holes positive
+    for (const r of rings) { r.hole = r.area2 > 0; r.area = Math.abs(r.area2) / 2; }
+    return rings;
+  }
+
+  function dropCollinear(pts) {
+    const n = pts.length / 2; if (n < 4) return pts;
+    const out = [];
+    for (let i = 0; i < n; i++) {
+      const a = (i + n - 1) % n, b = (i + 1) % n;
+      const cr = (pts[2 * i] - pts[2 * a]) * (pts[2 * b + 1] - pts[2 * i + 1]) - (pts[2 * i + 1] - pts[2 * a + 1]) * (pts[2 * b] - pts[2 * i]);
+      if (cr !== 0) out.push(pts[2 * i], pts[2 * i + 1]);
+    }
+    return out.length >= 6 ? Float64Array.from(out) : pts;
+  }
+
+  /** Douglas-Peucker on a closed ring (flat array). eps in px. Returns flat array. */
+  function simplifyRing(pts, eps) {
+    const n = pts.length / 2; if (n <= 3 || eps <= 0) return pts;
+    // split ring at point 0 and the point farthest from it
+    let far = 0, fd = -1;
+    for (let i = 1; i < n; i++) { const d = (pts[2 * i] - pts[0]) ** 2 + (pts[2 * i + 1] - pts[1]) ** 2; if (d > fd) { fd = d; far = i; } }
+    const keep = new Uint8Array(n); keep[0] = 1; keep[far] = 1;
+    const e2 = eps * eps, stack = [[0, far], [far, n]];       // second span wraps to index 0 (== n)
+    while (stack.length) {
+      const [a, b] = stack.pop(); if (b - a < 2) continue;
+      const ax = pts[2 * a], ay = pts[2 * a + 1], bi = b % n, bx = pts[2 * bi], by = pts[2 * bi + 1];
+      const dx = bx - ax, dy = by - ay, L2 = dx * dx + dy * dy; let md = -1, mi = -1;
+      for (let i = a + 1; i < b; i++) {
+        const x = pts[2 * i], y = pts[2 * i + 1]; let d;
+        if (L2 === 0) d = (x - ax) ** 2 + (y - ay) ** 2;
+        else { let t = ((x - ax) * dx + (y - ay) * dy) / L2; t = Math.max(0, Math.min(1, t)); d = (x - ax - t * dx) ** 2 + (y - ay - t * dy) ** 2; }
+        if (d > md) { md = d; mi = i; }
+      }
+      if (md > e2) { keep[mi] = 1; stack.push([a, mi], [mi, b]); }
+    }
+    const out = []; for (let i = 0; i < n; i++) if (keep[i]) out.push(pts[2 * i], pts[2 * i + 1]);
+    return out.length >= 6 ? Float64Array.from(out) : pts;
+  }
+
+  /** Full trace. gray: Uint8Array w*h. p: params. Returns {mask, polys:[[ [x,y],..]], items, info} (px coords, y down). */
+  function trace(gray, w, h, p) {
+    const mask = binarize(gray, w, h, p);
+    const scale = p.width / w;                                // output units per px
+    const rings = traceRings(mask, w, h);
+    const epsPx = p.tolerance / scale;
+    const polys = [], items = []; let dropped = 0, verts = 0;
+    for (const r of rings) {
+      if (r.hole && !p.holes) { dropped++; continue; }
+      let pts = r.pts, n = pts.length / 2;
+      if (n < 3) { dropped++; continue; }
+      let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+      for (let i = 0; i < n; i++) { const x = pts[2 * i], y = pts[2 * i + 1]; if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; }
+      const bw = x1 - x0, bh = y1 - y0;
+      if (p.drop_frame && bw >= w - 1 && bh >= h - 1) { dropped++; continue; }
+      if (Math.max(bw, bh) * scale < p.min_feature) { dropped++; continue; }
+      pts = simplifyRing(pts, epsPx);
+      const out = new Array(pts.length / 2);
+      for (let i = 0; i < out.length; i++) out[i] = [pts[2 * i], pts[2 * i + 1]];
+      verts += out.length; polys.push(out);
+      items.push({ id: items.length, hole: r.hole, area: +(r.area * scale * scale).toFixed(4), w: +(bw * scale).toFixed(3), h: +(bh * scale).toFixed(3), bbox: [x0, y0, x1, y1] });
+    }
+    const info = { paths: polys.length, vertices: verts, dropped, width: p.width, height: +(h * scale).toFixed(4), unit: p.unit, px_w: w, px_h: h };
+    return { mask, polys, items, info };
+  }
+
+  /** Downscale gray (box filter) so longest side <= MAX_DIM. */
+  function limitSize(gray, w, h) {
+    if (Math.max(w, h) <= MAX_DIM) return { gray, w, h };
+    const s = MAX_DIM / Math.max(w, h), nw = Math.max(1, Math.floor(w * s)), nh = Math.max(1, Math.floor(h * s));
+    const out = new Uint8Array(nw * nh);
+    for (let y = 0; y < nh; y++) { const ya = Math.floor(y / s), yb = Math.min(h, Math.max(ya + 1, Math.ceil((y + 1) / s)));
+      for (let x = 0; x < nw; x++) { const xa = Math.floor(x / s), xb = Math.min(w, Math.max(xa + 1, Math.ceil((x + 1) / s)));
+        let a = 0, c = 0; for (let yy = ya; yy < yb; yy++) for (let xx = xa; xx < xb; xx++) { a += gray[yy * w + xx]; c++; }
+        out[y * nw + x] = Math.round(a / c); } }
+    return { gray: out, w: nw, h: nh };
+  }
+
+  const api = { MAX_DIM, toGray, gaussian, otsu, binarize, traceRings, simplifyRing, dropCollinear, trace, limitSize };
+  if (typeof module !== "undefined" && module.exports) module.exports = api; else root.I2D_TRACE = api;
+})(typeof self !== "undefined" ? self : this);

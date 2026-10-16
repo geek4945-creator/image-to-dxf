@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Image → DXF cut file (browser edition)</title>
+<link rel="stylesheet" href="style.css">
+</head><body>
+<header><h1>Image → DXF</h1><span class="badge" title="Nothing is uploaded: all processing happens in this browser tab.">runs 100% in your browser</span><span id="status" class="status">Load an image to begin</span></header>
+<main>
+<aside id="panel">
+  <section>
+    <h2>1. Source</h2>
+    <div class="tabs" id="srcTabs">
+      <button data-tab="file" class="on">Upload</button><button data-tab="url">URL</button><button data-tab="cam">Camera</button>
+    </div>
+    <div id="tab-file" class="tab">
+      <label id="drop" class="drop">Drop image here or click to browse<br><small>PNG, JPG, BMP, WebP, GIF, AVIF, SVG (scans: save as image first; PDF/TIFF not supported in this edition)</small>
+        <input id="fileIn" type="file" accept="image/*" hidden></label>
+      <div class="row"><button id="phoneShot" title="On phones/tablets: opens the camera app">Take photo (mobile)</button>
+        <input id="phoneIn" type="file" accept="image/*" capture="environment" hidden>
+        <button id="pasteBtn" title="Or just press Ctrl+V anywhere on the page">Paste image</button></div>
+    </div>
+    <div id="tab-url" class="tab" hidden>
+      <input id="urlIn" type="url" placeholder="https://example.com/logo.png"><button id="urlGo">Fetch</button>
+      <p class="note">Browsers only allow this when the image's website permits cross-origin access (CORS). Many sites don't:
+      if it fails, right-click the image → <i>Save image as…</i> and upload the file instead. (The Python/Windows edition fetches server-side and works with more sites.)</p>
+    </div>
+    <div id="tab-cam" class="tab" hidden>
+      <video id="video" playsinline muted></video>
+      <p class="note">Camera needs permission, and HTTPS or localhost (opening the file directly also works in Chrome/Edge).</p>
+      <div><button id="camStart">Start camera</button> <button id="camShot" disabled>Capture frame</button> <button id="camStop" disabled>Stop</button></div>
+    </div>
+  </section>
+  <section>
+    <h2>2. Processing</h2>
+    <label>Threshold <output id="o_threshold">128</output><input id="threshold" type="range" min="0" max="255" value="128"></label>
+    <label class="row"><input id="auto" type="checkbox"> Auto (Otsu)</label>
+    <label class="row"><input id="invert" type="checkbox"> Invert (cut the light areas)</label>
+    <label>Blur <output id="o_blur">0</output><input id="blur" type="range" min="0" max="10" value="0"></label>
+    <label>Remove specks &lt; <output id="o_speckle">20</output> px<input id="speckle" type="range" min="0" max="500" value="20"></label>
+    <label>Simplify tolerance <output id="o_tolerance">0.2</output><input id="tolerance" type="range" min="0" max="5" step="0.05" value="0.2"></label>
+    <label>Min feature size <output id="o_min_feature">1</output><input id="min_feature" type="range" min="0" max="50" step="0.5" value="1"></label>
+    <label class="row"><input id="holes" type="checkbox" checked> Keep inner holes</label>
+    <label class="row"><input id="drop_frame" type="checkbox" checked> Drop full-image border</label>
+    <div class="row">Output width <input id="width" type="number" min="0.1" step="any" value="100" style="width:80px">
+      <select id="unit"><option>mm</option><option>in</option></select> <small id="heightNote"></small></div>
+  </section>
+  <section>
+    <h2>3. Grid / area of interest</h2>
+    <label class="row"><input id="gridOn" type="checkbox"> Show grid</label>
+    <div class="row"><select id="gridMode"><option value="count">Rows × cols</option><option value="size">Cell size</option></select>
+      <span id="gridCount"><input id="rows" type="number" min="1" max="100" value="3" style="width:50px"> ×
+      <input id="cols" type="number" min="1" max="100" value="3" style="width:50px"></span>
+      <span id="gridSize" hidden><input id="cell" type="number" min="0.1" step="any" value="25" style="width:70px"> <span class="u">mm</span></span></div>
+    <div class="row">Tool:
+      <label><input type="radio" name="tool" value="contour" checked> Contours</label>
+      <label><input type="radio" name="tool" value="cell"> Grid cells</label>
+      <label><input type="radio" name="tool" value="region"> Drag region</label></div>
+    <div class="row"><button id="clearAreas">Clear areas</button> <button id="allCells">All cells</button> <small id="areaNote"></small></div>
+  </section>
+  <section>
+    <h2>4. Export</h2>
+    <label class="row"><input id="limitArea" type="checkbox" checked> Limit to area of interest (if any)</label>
+    <label class="row"><input id="clip" type="checkbox"> Clip contours at area boundary</label>
+    <div class="row">Split: <select id="split"><option value="none">One file, one CUT layer</option><option value="layers">One file, layer per group</option><option value="files">Separate files (zip)</option></select></div>
+    <div class="row">Group by: <select id="groupBy"><option value="contour">contour</option><option value="cell">area / cell</option></select>
+      <label class="row"><input id="zero" type="checkbox"> origin to 0,0 per file</label></div>
+    <button id="download" class="primary" disabled>Download DXF</button>
+    <div id="exportNote" class="note"></div>
+  </section>
+</aside>
+<section id="view">
+  <div class="toolbar">
+    <label><input id="showImg" type="checkbox" checked> Image</label>
+    <label><input id="showMask" type="checkbox"> Threshold preview</label>
+    <label><input id="showVec" type="checkbox" checked> Vectors</label>
+    <span id="info" class="note"></span>
+  </div>
+  <div id="stage"><svg id="svg" xmlns="http://www.w3.org/2000/svg"></svg><div id="empty">No image loaded</div></div>
+</section>
+<aside id="listPanel">
+  <h2>Contours <small id="selCount"></small></h2>
+  <div class="row"><button id="selAll">Select all</button><button id="selNone">Clear</button><button id="selInv">Invert</button><button id="selArea" title="Select contours whose bounding box touches the area of interest">In area</button></div>
+  <ul id="list"></ul>
+</aside>
+</main>
+<script src="js/polygon-clipping.umd.min.js"></script>
+<script src="js/trace.js"></script>
+<script src="js/dxf.js"></script>
+<script src="js/app.js"></script>
+</body></html>

@@ -1,0 +1,7 @@
+flask>=3.0
+numpy>=1.24
+opencv-python-headless>=4.8
+ezdxf>=1.1
+pillow>=10.0
+requests>=2.31
+shapely>=2.0

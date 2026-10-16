@@ -1,0 +1,41 @@
+*{box-sizing:border-box}
+body{margin:0;font:14px/1.4 system-ui,sans-serif;background:#f3f4f6;color:#1f2937;height:100vh;display:flex;flex-direction:column}
+header{background:#111827;color:#fff;padding:8px 16px;display:flex;gap:16px;align-items:baseline}
+header h1{font-size:18px;margin:0}.status{font-size:13px;color:#9ca3af}.status.err{color:#fca5a5}
+main{flex:1;display:grid;grid-template-columns:300px 1fr 240px;min-height:0}
+aside,#view{overflow:auto}
+#panel,#listPanel{background:#fff;padding:10px;border-right:1px solid #e5e7eb}
+#listPanel{border-left:1px solid #e5e7eb;border-right:0;display:flex;flex-direction:column}
+h2{font-size:13px;text-transform:uppercase;letter-spacing:.05em;color:#6b7280;margin:12px 0 6px}
+section>label,section .row{display:block;margin:5px 0}
+.row{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+label.row{display:flex}
+input[type=range]{width:100%}input[type=url]{width:70%}
+output{float:right;color:#6b7280}
+button{padding:4px 9px;border:1px solid #d1d5db;background:#f9fafb;border-radius:5px;cursor:pointer}
+button:hover:not(:disabled){background:#eef2ff}button:disabled{opacity:.5;cursor:default}
+button.primary{background:#2563eb;color:#fff;border-color:#1d4ed8;width:100%;padding:8px;margin-top:6px}
+.tabs{display:flex;gap:4px;margin-bottom:6px}.tabs button.on{background:#2563eb;color:#fff}
+.drop{display:block;border:2px dashed #9ca3af;border-radius:8px;padding:18px;text-align:center;cursor:pointer}
+.drop.over{background:#dbeafe;border-color:#2563eb}
+video{width:100%;background:#000;border-radius:6px;max-height:180px}
+.note{font-size:12px;color:#6b7280}
+#view{padding:8px;display:flex;flex-direction:column}
+.toolbar{display:flex;gap:14px;align-items:center;margin-bottom:6px}
+#stage{position:relative;flex:1;background:#d1d5db;border-radius:6px;overflow:auto;display:flex;align-items:flex-start;justify-content:center}
+#svg{max-width:100%;max-height:100%;background:#fff;display:none;user-select:none;touch-action:none}
+#empty{color:#6b7280;align-self:center}
+#list{list-style:none;margin:6px 0 0;padding:0;overflow:auto;flex:1}
+#list li{display:flex;gap:6px;align-items:center;padding:2px 4px;border-radius:4px;cursor:pointer;font-size:12px}
+#list li:hover,#list li.hl{background:#fee2e2}#list li .tag{color:#6b7280;margin-left:auto}
+#list li.off{color:#9ca3af}
+.c{fill:rgba(220,38,38,.12);stroke:#dc2626;stroke-width:1.5;vector-effect:non-scaling-stroke;cursor:pointer}
+.c.off{fill:rgba(0,0,0,0);stroke:#9ca3af;stroke-dasharray:4 3}.c.hl{fill:rgba(250,204,21,.45);stroke:#ca8a04}
+.g{stroke:#2563eb;stroke-width:1;vector-effect:non-scaling-stroke;opacity:.7;fill:none}
+.cell{fill:rgba(37,99,235,.22);stroke:#2563eb;vector-effect:non-scaling-stroke}
+.area{fill:rgba(16,185,129,.2);stroke:#059669;stroke-width:2;vector-effect:non-scaling-stroke;stroke-dasharray:6 3}
+.lbl{font:12px sans-serif;fill:#1d4ed8;pointer-events:none}
+button.primary:hover:not(:disabled){background:#1d4ed8}
+
+.badge{background:#065f46;color:#d1fae5;font-size:11px;padding:2px 8px;border-radius:10px;align-self:center}
+.tab p.note{margin:6px 0}

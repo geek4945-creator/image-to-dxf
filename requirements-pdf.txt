@@ -1,0 +1,2 @@
+# Optional: scanned-PDF input (first page). Pure wheels for Windows/macOS/Linux, no poppler needed.
+pymupdf>=1.23
