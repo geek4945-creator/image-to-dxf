@@ -24,3 +24,31 @@ def make(path=None, seed=0):
     if path:
         out.save(path)
     return out
+
+
+def make_nested(path=None):
+    """800x600 image for nesting / tab / zone / crop tests:
+    A: square ring with an island inside the hole and a hole in the island (depths 0,1,2,3);
+    B: ellipse ring (outer + hole); C: plain rectangle; D: big plain rectangle (tab target); E: text '80' (letters with holes)."""
+    im = Image.new("RGB", (800, 600), "white")
+    d = ImageDraw.Draw(im)
+    d.rectangle([40, 40, 340, 300], fill="black"); d.rectangle([90, 90, 290, 250], fill="white")      # A outer + hole
+    d.rectangle([140, 130, 240, 210], fill="black"); d.rectangle([170, 150, 210, 190], fill="white")  # island + island hole
+    d.ellipse([400, 60, 600, 260], fill="black"); d.ellipse([450, 110, 550, 210], fill="white")       # B
+    d.rectangle([640, 60, 760, 160], fill="black")                                                    # C
+    d.rectangle([60, 360, 300, 560], fill="black")                                                    # D
+    try:
+        f = ImageFont.load_default(size=150)
+    except TypeError:
+        f = ImageFont.load_default()
+    d.text((380, 360), "80", fill="black", font=f)                                                    # E
+    if path:
+        im.save(path)
+    return im
+
+
+if __name__ == "__main__":
+    import os
+    here = os.path.dirname(os.path.abspath(__file__))
+    make(os.path.join(here, "test_image.png"))
+    make_nested(os.path.join(here, "test_nested.png"))

@@ -6,7 +6,9 @@ from ezdxf import recover
 from playwright.sync_api import sync_playwright
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-WEB = os.environ.get("WEB_INDEX") or os.path.abspath(os.path.join(HERE, "..", "web", "index.html"))
+WEB = os.environ.get("WEB_INDEX") or os.path.abspath(os.path.join(HERE, "..", "docs", "index.html"))
+URL = os.environ.get("WEB_URL") or "file://" + WEB          # WEB_URL=https://... runs the same tests against a deployed copy
+ORIGIN = URL.split("/", 3)[0] + "//" + URL.split("/", 3)[2] if not URL.startswith("file:") else "file:"
 IMG = os.path.join(HERE, "test_image.png")
 CHROME = next((p for p in ("/usr/bin/google-chrome", "/usr/bin/chromium", "/usr/bin/chromium-browser") if os.path.exists(p)), None)
 results = []
@@ -42,7 +44,7 @@ def main():
         page.on("console", lambda m: errors.append(m.text) if m.type == "error" and "127.0.0.1" not in m.text and "Failed to load resource" not in m.text else None)
         reqs = []
         page.on("request", lambda r: reqs.append(r.url))
-        page.goto("file://" + WEB)
+        page.goto(URL)
 
         def status():
             return page.inner_text("#status")
@@ -59,7 +61,8 @@ def main():
         page.wait_for_function("document.querySelectorAll('#list li[data-id]').length>0")
         n = page.locator("#list li[data-id]").count()
         check("upload+trace finds 8 contours", n == 8, n)
-        check("no network requests besides file://", all(u.startswith(("file:", "blob:", "data:")) for u in reqs), [u for u in reqs if not u.startswith(("file:", "blob:", "data:"))])
+        ok_pre = (ORIGIN, "blob:", "data:") if ORIGIN != "file:" else ("file:", "blob:", "data:")
+        check("no network requests besides the app's own origin", all(u.startswith(ok_pre) for u in reqs), [u for u in reqs if not u.startswith(ok_pre)])
 
         # --- full export, DXF re-opens in ezdxf
         p = download()

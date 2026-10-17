@@ -7,13 +7,20 @@
   // ------------------------------------------------------------------ DXF writer
   const num = v => { if (Math.abs(v) < 1e-12) v = 0; let s = v.toFixed(6); if (s.indexOf(".") >= 0) s = s.replace(/0+$/, "").replace(/\.$/, ""); return s === "-0" ? "0" : s; };
 
-  /** groups: [{name, polys:[[ [x,y],.. ]]}] in output units (y up). unit 'mm'|'in'. */
+  /** Legacy helper: groups [{name, polys:[[ [x,y],.. ]]}] (all closed) -> writeEntities. */
   function writeDxf(groups, unit) {
+    return writeEntities(groups.flatMap(g => g.polys.map(q => ({ layer: g.name, pts: q, closed: true }))), unit);
+  }
+
+  /** entities: [{layer, pts:[[x,y],..], closed}] in output units (y up), written in the given order. unit 'mm'|'in'. */
+  function writeEntities(entities, unit) {
+    const groups = [];
+    { const idx = {}; entities.forEach(e => { if (!(e.layer in idx)) { idx[e.layer] = groups.length; groups.push({ name: e.layer, polys: [] }); } groups[idx[e.layer]].polys.push(e.pts); }); }
     let seed = 0x30; const H = () => (seed++).toString(16).toUpperCase();
     const out = []; const add = (c, v) => out.push(String(c), String(v));
-    const names = []; groups.forEach(g => { if (names.indexOf(g.name) < 0) names.push(g.name); });
+    const names = groups.map(g => g.name);
     let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
-    groups.forEach(g => g.polys.forEach(q => q.forEach(([x, y]) => { if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; })));
+    entities.forEach(e => e.pts.forEach(([x, y]) => { if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; }));
     if (!isFinite(x0)) { x0 = y0 = 0; x1 = y1 = 0; }
     // fixed handles for the structural objects
     const hMS = "17", hPS = "1B", hBR = "9", hLT = "2", hLY = "1", hST = "5", hAP = "3", hDICT = "A";
@@ -69,12 +76,13 @@
     add(0, "ENDSEC");
     // ENTITIES
     add(0, "SECTION"); add(2, "ENTITIES");
-    groups.forEach(g => g.polys.forEach(q => {
-      if (q.length < 3) return;
-      add(0, "LWPOLYLINE"); add(5, H()); add(330, hMS); add(100, "AcDbEntity"); add(8, g.name);
-      add(100, "AcDbPolyline"); add(90, q.length); add(70, 1); add(43, 0);
+    entities.forEach(e => {
+      const q = e.pts, cl = e.closed !== false;
+      if (q.length < (cl ? 3 : 2)) return;
+      add(0, "LWPOLYLINE"); add(5, H()); add(330, hMS); add(100, "AcDbEntity"); add(8, e.layer);
+      add(100, "AcDbPolyline"); add(90, q.length); add(70, cl ? 1 : 0); add(43, 0);
       q.forEach(([x, y]) => { add(10, num(x)); add(20, num(y)); });
-    }));
+    });
     add(0, "ENDSEC");
     // OBJECTS
     add(0, "SECTION"); add(2, "OBJECTS");
@@ -100,10 +108,115 @@
     return out;
   }
 
-  /** Mirrors selection.build_groups. polys: px coords (y down). scale: units/px. regions: [{rect:[x0,y0,x1,y1] px, label}].
-      Returns {groups:[{name, polys}] in OUTPUT units (y up)} */
-  function buildGroups(polys, o) {
-    const { pxW, pxH, scale } = o; const n = polys.length;
+  // ------------------------------------------------------------------ nesting depth (for "cut inside first")
+  const inRing = (x, y, q) => {                       // even-odd ray casting
+    let c = false;
+    for (let i = 0, j = q.length - 1; i < q.length; j = i++) {
+      const xi = q[i][0], yi = q[i][1], xj = q[j][0], yj = q[j][1];
+      if ((yi > y) !== (yj > y) && x < (xj - xi) * (y - yi) / (yj - yi) + xi) c = !c;
+    }
+    return c;
+  };
+  /** Number of other contours that geometrically contain each contour (0 = outermost). polys in px. */
+  const depthCache = new WeakMap();
+  function nestingDepths(polys) {
+    if (depthCache.has(polys)) return depthCache.get(polys);
+    const n = polys.length, bb = polys.map(bboxOf), ar = polys.map(q => ringArea(closed(q))), depth = new Array(n).fill(0);
+    const order = polys.map((_, i) => i).sort((a, b) => ar[b] - ar[a]);
+    for (let a = 0; a < n; a++) {
+      const i = order[a], q = polys[i], k = Math.min(7, q.length), samples = [];
+      for (let s = 0; s < k; s++) samples.push(q[Math.floor(s * q.length / k)]);
+      for (let b = 0; b < a; b++) {                    // only larger contours can contain i
+        const j = order[b], B = bb[j], I = bb[i];
+        if (ar[j] <= ar[i] || I[0] < B[0] - 1e-9 || I[2] > B[2] + 1e-9 || I[1] < B[1] - 1e-9 || I[3] > B[3] + 1e-9) continue;
+        let inside = 0; for (const [x, y] of samples) if (inRing(x, y, polys[j])) inside++;
+        if (inside * 2 > k) depth[i]++;
+      }
+    }
+    depthCache.set(polys, depth); return depth;
+  }
+
+  // ------------------------------------------------------------------ tabs / bridges
+  const dist = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]);
+  /** Split a closed ring (open array of [x,y] in output units) into open polylines leaving n gaps of length w, evenly spaced
+      along the perimeter. Gaps are nudged onto a single straight edge when one is close, so each gap is exactly w long as a chord.
+      opts: {width, count, spacing}. Returns {segs:[pts], gaps:[pts], n} or null if the contour is too small. */
+  function ringTabs(ring, opts) {
+    const w = opts.width, m = ring.length;
+    if (!(w > 0) || m < 3) return null;
+    const v = ring.concat([ring[0]]), L = [], cum = [0];
+    for (let i = 0; i < m; i++) { L.push(dist(v[i], v[i + 1])); cum.push(cum[i] + L[i]); }
+    const P = cum[m];
+    let n = opts.spacing > 0 ? Math.max(1, Math.round(P / opts.spacing)) : Math.max(1, Math.round(opts.count || 1));
+    n = Math.min(n, Math.floor(P / (3 * w)));
+    if (n < 1) return null;
+    const rad = P / (4 * n), gaps = [];
+    for (let k = 0; k < n; k++) {
+      const t = (k + 0.5) * P / n; let best = t, bd = Infinity;
+      for (let i = 0; i < m; i++) {
+        if (L[i] < w) continue;
+        const lo = cum[i] + w / 2, hi = cum[i + 1] - w / 2, c = Math.max(lo, Math.min(hi, t)), d = Math.abs(c - t);
+        if (d <= rad && d < bd) { bd = d; best = c; }
+      }
+      gaps.push([best - w / 2, best + w / 2]);
+    }
+    const at = s => {
+      let i = 0; while (i < m - 1 && cum[i + 1] < s) i++;
+      const t = L[i] > 0 ? Math.max(0, Math.min(1, (s - cum[i]) / L[i])) : 0;
+      return [v[i][0] + (v[i + 1][0] - v[i][0]) * t, v[i][1] + (v[i + 1][1] - v[i][1]) * t];
+    };
+    const sub = (a, b) => {
+      const out = [at(a)];
+      for (let i = 1; i < m; i++) if (cum[i] > a + 1e-12 && cum[i] < b - 1e-12) out.push(v[i]);
+      out.push(at(b)); return out;
+    };
+    const dedupe = q => q.filter((p, i) => i === 0 || dist(p, q[i - 1]) > 1e-9);
+    const segs = [];
+    for (let k = 0; k < n - 1; k++) segs.push(dedupe(sub(gaps[k][1], gaps[k + 1][0])));
+    const last = sub(gaps[n - 1][1], P), first = sub(0, gaps[0][0]);
+    segs.push(dedupe(last.concat(first.slice(1))));
+    return { segs: segs.filter(q => q.length >= 2), gaps: gaps.map(g => sub(g[0], g[1])), n };
+  }
+
+  // ------------------------------------------------------------------ cut ordering
+  /** units: [{paths:[{pts,closed}], depth}]. Reorders (and rotates closed rings / cyclic tab segments to start nearest the
+      previous end point) according to o.insideFirst (deepest nesting first) and o.nearest (greedy nearest neighbour). */
+  function orderUnits(units, o) {
+    const insideFirst = !!o.insideFirst, nearest = !!o.nearest;
+    if (!insideFirst && !nearest) return units;
+    const tiers = [];
+    if (insideFirst) {
+      const by = new Map(); units.forEach(u => { if (!by.has(u.depth)) by.set(u.depth, []); by.get(u.depth).push(u); });
+      [...by.keys()].sort((a, b) => b - a).forEach(d => tiers.push(by.get(d)));
+    } else tiers.push(units.slice());
+    const out = []; let pos = [0, 0];
+    for (const tier of tiers) {
+      if (!nearest || tier.length > 6000) { tier.forEach(u => out.push(u)); if (tier.length) pos = endOf(tier[tier.length - 1]); continue; }
+      const rest = tier.slice();
+      while (rest.length) {
+        let bi = 0, bd = Infinity, bk = 0;
+        for (let i = 0; i < rest.length; i++) {
+          const u = rest[i], cands = u.paths.length === 1 && u.paths[0].closed ? u.paths[0].pts : u.paths.map(p => p.pts[0]);
+          for (let k = 0; k < cands.length; k++) { const d = (cands[k][0] - pos[0]) ** 2 + (cands[k][1] - pos[1]) ** 2; if (d < bd) { bd = d; bi = i; bk = k; } }
+        }
+        const u = rest.splice(bi, 1)[0];
+        if (u.paths.length === 1 && u.paths[0].closed) { const q = u.paths[0].pts; u.paths[0] = { pts: q.slice(bk).concat(q.slice(0, bk)), closed: true }; }
+        else u.paths = u.paths.slice(bk).concat(u.paths.slice(0, bk));
+        out.push(u); pos = endOf(u);
+      }
+    }
+    return out;
+  }
+  function endOf(u) { const p = u.paths[u.paths.length - 1]; return p.closed ? p.pts[0] : p.pts[p.pts.length - 1]; }
+
+  // ------------------------------------------------------------------ plan: selection -> clip -> tabs -> order -> entities
+  /** polys: px coords (y down). Options (o):
+        pxW, pxH, scale (units/px, x), scaleY (defaults to scale), unit, selected (ids), regions [{rect px, label}], clip,
+        split none|layers|files, groupBy contour|cell, insideFirst, nearest, innerOuterLayers (CUT_INNER / CUT_OUTER, one-file mode),
+        isHole [bool per contour], tabs {width, count, spacing, allOuter, ids, skipHoles}
+      Returns {entities:[{layer, pts (output units, y up), closed, cid, depth, seq}], layers, gaps:[{cid, pts}], stats} */
+  function buildPlan(polys, o) {
+    const { pxW, pxH } = o, sx = o.scale, sy = o.scaleY || o.scale, n = polys.length;
     const clip = !!o.clip, split = o.split || "none", groupBy = o.groupBy || "contour";
     let ids;
     if (o.selected == null) ids = polys.map((_, i) => i);
@@ -121,32 +234,66 @@
     if (cells.length) area = { mp: cells.length === 1 ? cells[0].mp : pc().union(...cells.map(c => c.mp)), rects: cells.map(c => c.rect) };
     const bb = {}; ids.forEach(i => bb[i] = bboxOf(polys[i]));
     const rectsTouch = (b, rects) => rects.some(([x0, y0, x1, y1]) => b[0] < x1 && b[2] > x0 && b[1] < y1 && b[3] > y0);
-    // contour i within a region {mp,rects}: returns list of px rings
-    function pieces(i, region) {
+    function pieces(i, region) {                       // px rings of contour i within a region
       if (!region) return [polys[i]];
       if (!rectsTouch(bb[i], region.rects)) return [];
       const rings = intersectRings(polys[i], region.mp);
       if (!rings.length) return [];
       return clip ? rings : [polys[i]];
     }
-    const toOut = q => q.map(([x, y]) => [x * scale, (pxH - y) * scale]);
-    let groups;
-    if (split === "none") groups = [["CUT", ids.flatMap(i => pieces(i, area))]];
+    const toOut = q => q.map(([x, y]) => [x * sx, (pxH - y) * sy]);
+    let groups;                                        // [[name, [{cid, ring}]]]
+    const wrap = (i, region) => pieces(i, region).map(ring => ({ cid: i, ring }));
+    if (split === "none") groups = [["CUT", ids.flatMap(i => wrap(i, area))]];
     else if (split === "layers" || split === "files") {
       if (groupBy === "cell") {
         if (!cells.length) throw new Error("Group by cell needs grid cells or a drawn region");
-        groups = cells.map(c => ["CUT_" + c.label, ids.flatMap(i => pieces(i, { mp: c.mp, rects: [c.rect] }))]);
-      } else if (groupBy === "contour") groups = ids.map(i => ["CUT_" + String(i).padStart(3, "0"), pieces(i, area)]);
+        groups = cells.map(c => ["CUT_" + c.label, ids.flatMap(i => wrap(i, { mp: c.mp, rects: [c.rect] }))]);
+      } else if (groupBy === "contour") groups = ids.map(i => ["CUT_" + String(i).padStart(3, "0"), wrap(i, area)]);
       else throw new Error("group_by must be 'contour' or 'cell'");
     } else throw new Error("split must be none, layers or files");
-    groups = groups.filter(g => g[1].length).map(([name, ps]) => ({ name, polys: ps.map(toOut) }));
+    groups = groups.filter(g => g[1].length);
     if (!groups.length) throw new Error("Nothing to export: selection does not overlap the area of interest");
-    return groups;
+
+    const needDepth = o.insideFirst || o.innerOuterLayers;
+    const depth = needDepth ? nestingDepths(polys) : null;
+    const isHole = i => o.isHole ? !!o.isHole[i] : (depth ? depth[i] % 2 === 1 : false);
+    const T = o.tabs && o.tabs.width > 0 ? o.tabs : null, flagged = new Set(T ? (T.ids || []).map(Number) : []);
+    const gaps = [], stats = { units: 0, tabbed: 0, tabs: 0, tabSkipped: 0, maxDepth: 0 };
+    let seqBase = 0;
+    const planGroup = (name, items) => {
+      let units = items.map(({ cid, ring }) => {
+        const pts = toOut(ring), d = depth ? depth[cid] : 0, hole = isHole(cid);
+        const layer = split === "none" ? (o.innerOuterLayers ? (d > 0 ? "CUT_INNER" : "CUT_OUTER") : "CUT") : name;
+        let paths = [{ pts, closed: true }];
+        if (T && ((T.allOuter && !hole) || (flagged.has(cid) && !(T.skipHoles && hole)))) {
+          const r = ringTabs(pts, T);
+          if (r) { paths = r.segs.map(q => ({ pts: q, closed: false })); r.gaps.forEach(g => gaps.push({ cid, pts: g })); stats.tabbed++; stats.tabs += r.n; }
+          else stats.tabSkipped++;
+        }
+        return { layer, cid, depth: d, paths };
+      });
+      return units;
+    };
+    let ordered;
+    if (split === "files") ordered = groups.flatMap(([name, items]) => orderUnits(planGroup(name, items), o));
+    else ordered = orderUnits(groups.flatMap(([name, items]) => planGroup(name, items)), o);
+    const entities = [];
+    ordered.forEach((u, k) => { stats.units++; stats.maxDepth = Math.max(stats.maxDepth, u.depth); u.paths.forEach(p => entities.push({ layer: u.layer, pts: p.pts, closed: p.closed, cid: u.cid, depth: u.depth, seq: k + 1 })); });
+    const layers = []; entities.forEach(e => { if (layers.indexOf(e.layer) < 0) layers.push(e.layer); });
+    return { entities, layers, gaps, stats };
   }
 
-  function shiftToOrigin(groups) {
-    let ox = Infinity, oy = Infinity; groups.forEach(g => g.polys.forEach(q => q.forEach(([x, y]) => { if (x < ox) ox = x; if (y < oy) oy = y; })));
-    return groups.map(g => ({ name: g.name, polys: g.polys.map(q => q.map(([x, y]) => [x - ox, y - oy])) }));
+  /** Compatibility wrapper: plan grouped by layer -> [{name, polys}] (output units). */
+  function buildGroups(polys, o) {
+    const plan = buildPlan(polys, o), g = new Map();
+    plan.entities.forEach(e => { if (!g.has(e.layer)) g.set(e.layer, []); g.get(e.layer).push(e.pts); });
+    return [...g.entries()].map(([name, ps]) => ({ name, polys: ps }));
+  }
+
+  function shiftToOrigin(entities, ref) {
+    let ox = Infinity, oy = Infinity; entities.forEach(e => e.pts.forEach(([x, y]) => { if (x < ox) ox = x; if (y < oy) oy = y; }));
+    return entities.map(e => Object.assign({}, e, { pts: e.pts.map(([x, y]) => [x - ox, y - oy]) }));
   }
 
   // ------------------------------------------------------------------ ZIP (store or deflate-raw via CompressionStream)
@@ -183,18 +330,18 @@
     return res;
   }
 
-  /** High level export: returns {bytes:Uint8Array|string, mime, filename, paths, groups} */
+  /** High level export: returns {bytes:Uint8Array|string, mime, filename, paths, groups, plan} */
   async function exportDxf(polys, o) {
-    let groups = buildGroups(polys, o);
-    const enc = new TextEncoder(); const paths = groups.reduce((a, g) => a + g.polys.length, 0);
+    const plan = buildPlan(polys, o); let ents = plan.entities;
+    const enc = new TextEncoder(), paths = ents.length;
     if (o.split === "files") {
-      const files = groups.map(g => { const gs = o.zeroOrigin ? shiftToOrigin([g]) : [g]; return { name: g.name + ".dxf", data: enc.encode(writeDxf(gs, o.unit)) }; });
-      return { bytes: await makeZip(files), mime: "application/zip", filename: "cut_files.zip", paths, groups: groups.length };
+      const files = plan.layers.map(l => { let es = ents.filter(e => e.layer === l); if (o.zeroOrigin) es = shiftToOrigin(es); return { name: l + ".dxf", data: enc.encode(writeEntities(es, o.unit)) }; });
+      return { bytes: await makeZip(files), mime: "application/zip", filename: "cut_files.zip", paths, groups: plan.layers.length, plan };
     }
-    if (o.zeroOrigin) groups = shiftToOrigin(groups);
-    return { bytes: enc.encode(writeDxf(groups, o.unit)), mime: "application/dxf", filename: "cut.dxf", paths, groups: groups.length };
+    if (o.zeroOrigin) ents = shiftToOrigin(ents);
+    return { bytes: enc.encode(writeEntities(ents, o.unit)), mime: "application/dxf", filename: "cut.dxf", paths, groups: plan.layers.length, plan };
   }
 
-  const api = { writeDxf, buildGroups, exportDxf, makeZip, crc32 };
+  const api = { writeDxf, writeEntities, buildPlan, buildGroups, exportDxf, makeZip, crc32, nestingDepths, ringTabs, orderUnits };
   if (typeof module !== "undefined" && module.exports) module.exports = api; else root.I2D_DXF = api;
 })(typeof self !== "undefined" ? self : this);

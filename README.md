@@ -17,8 +17,16 @@ or a zip of separate DXFs (one per contour/cell, optional origin-to-0,0).
 
 ## Editions
 - **Python/Flask** (this folder): full server version (URL fetch server-side, PDF/TIFF input).
-- **Browser-only** (`web/`): same workflow, 100 % client-side static files, open `web/index.html` — see `web/README.md`.
+- **Browser-only** (`docs/`, served by GitHub Pages at https://geek4945-creator.github.io/image-to-dxf/; `web/` is an identical copy used by the Windows package): same workflow, 100 % client-side static files, open `index.html` — see `docs/README.md`. Only this edition has the v3 features below.
 - **Windows package**: `image-to-dxf-windows.zip` (install.bat / run.bat + the `web/` folder) — see its `WINDOWS-INSTALL.md`.
+
+## Browser edition v3 features
+Clear image · output size in mm/inches by width, height, scale % or PPI with aspect lock and live size readout (`$INSUNITS` follows the unit) ·
+**Cut inside first** (inner contours written before outer ones, optional nearest-neighbour order and CUT_INNER/CUT_OUTER layers) ·
+**Tabs / hold-in bridges** (per contour or all outer cuts; width, count or spacing; written as open polylines with gaps; shown in preview) ·
+**Zones** (drag-drawn, movable, resizable, listed; on/off per zone, bulk enable/disable/invert by centre-in-zone; off zones are excluded from export; works on touch) ·
+**Crop / focus** on part of the image (cropped before tracing, origin at crop corner, width refers to full image or crop). Details: `docs/README.md`.
+These are not in the Python/Flask edition.
 
 ## Run
 ```bash
@@ -28,7 +36,7 @@ pip install -r requirements.txt
 PORT=5000 python app.py            # http://127.0.0.1:5000   (HOST=0.0.0.0 to expose on LAN)
 ```
 `python launcher.py` picks a free port and opens the browser. PDF input is optional: `pip install -r requirements-pdf.txt` (PyMuPDF; no poppler needed) or install poppler's `pdftoppm`; without either, PDFs get a clear error. Camera access needs `localhost` or HTTPS.
-Tests: `pip install -r requirements-dev.txt && python -m pytest -q tests/test_all.py` and, for the browser edition (needs Chrome), `python tests/test_web.py`.
+Tests: `pip install -r requirements-dev.txt && python -m pytest -q tests/test_all.py` and, for the browser edition (needs Chrome + `pip install playwright ezdxf pillow`), `python tests/test_web.py` and `python tests/test_features.py` (v3 features; `WEB_URL=<live url>` runs them against a deployed copy).
 
 ## API
 | endpoint | purpose |

@@ -158,10 +158,13 @@
     return out.length >= 6 ? Float64Array.from(out) : pts;
   }
 
-  /** Full trace. gray: Uint8Array w*h. p: params. Returns {mask, polys:[[ [x,y],..]], items, info} (px coords, y down). */
+  /** Full trace. gray: Uint8Array w*h. p: params. Output scale (units per px): p.scale (x) / p.scaleY (y, defaults to x),
+      or derived from p.width (output width of the whole w-px-wide image). Returns {mask, polys:[[ [x,y],..]], items, info}
+      (px coords, y down). items also carry centroid (cx,cy) and bbox centre (bcx,bcy) in px, used by zones. */
   function trace(gray, w, h, p) {
     const mask = binarize(gray, w, h, p);
-    const scale = p.width / w;                                // output units per px
+    const sx = p.scale > 0 ? p.scale : p.width / w, sy = p.scaleY > 0 ? p.scaleY : sx;
+    const scale = Math.sqrt(sx * sy);                         // mean output units per px (tolerance / min feature)
     const rings = traceRings(mask, w, h);
     const epsPx = p.tolerance / scale;
     const polys = [], items = []; let dropped = 0, verts = 0;
@@ -173,15 +176,33 @@
       for (let i = 0; i < n; i++) { const x = pts[2 * i], y = pts[2 * i + 1]; if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; }
       const bw = x1 - x0, bh = y1 - y0;
       if (p.drop_frame && bw >= w - 1 && bh >= h - 1) { dropped++; continue; }
-      if (Math.max(bw, bh) * scale < p.min_feature) { dropped++; continue; }
+      if (Math.max(bw * sx, bh * sy) < p.min_feature) { dropped++; continue; }
       pts = simplifyRing(pts, epsPx);
       const out = new Array(pts.length / 2);
       for (let i = 0; i < out.length; i++) out[i] = [pts[2 * i], pts[2 * i + 1]];
+      const c = centroid(out, (x0 + x1) / 2, (y0 + y1) / 2);
       verts += out.length; polys.push(out);
-      items.push({ id: items.length, hole: r.hole, area: +(r.area * scale * scale).toFixed(4), w: +(bw * scale).toFixed(3), h: +(bh * scale).toFixed(3), bbox: [x0, y0, x1, y1] });
+      items.push({ id: items.length, hole: r.hole, area: +(r.area * sx * sy).toFixed(4), w: +(bw * sx).toFixed(3), h: +(bh * sy).toFixed(3), bbox: [x0, y0, x1, y1],
+        cx: c[0], cy: c[1], bcx: (x0 + x1) / 2, bcy: (y0 + y1) / 2 });
     }
-    const info = { paths: polys.length, vertices: verts, dropped, width: p.width, height: +(h * scale).toFixed(4), unit: p.unit, px_w: w, px_h: h };
+    const info = { paths: polys.length, vertices: verts, dropped, width: +(w * sx).toFixed(4), height: +(h * sy).toFixed(4), unit: p.unit, px_w: w, px_h: h };
     return { mask, polys, items, info };
+  }
+
+  /** Area centroid of a closed polygon [[x,y]..]; falls back to (fx,fy) when degenerate. */
+  function centroid(q, fx, fy) {
+    let a = 0, cx = 0, cy = 0;
+    for (let i = 0, n = q.length; i < n; i++) { const [x0, y0] = q[i], [x1, y1] = q[(i + 1) % n], c = x0 * y1 - x1 * y0; a += c; cx += (x0 + x1) * c; cy += (y0 + y1) * c; }
+    return Math.abs(a) < 1e-9 ? [fx, fy] : [cx / (3 * a), cy / (3 * a)];
+  }
+
+  /** Crop gray (w*h) to rect [x0,y0,x1,y1] (integers, px). Returns {gray,w,h}. */
+  function cropGray(gray, w, h, rect) {
+    const x0 = Math.max(0, Math.min(w - 1, Math.round(rect[0]))), y0 = Math.max(0, Math.min(h - 1, Math.round(rect[1])));
+    const x1 = Math.max(x0 + 1, Math.min(w, Math.round(rect[2]))), y1 = Math.max(y0 + 1, Math.min(h, Math.round(rect[3])));
+    const cw = x1 - x0, ch = y1 - y0, out = new Uint8Array(cw * ch);
+    for (let y = 0; y < ch; y++) out.set(gray.subarray((y0 + y) * w + x0, (y0 + y) * w + x0 + cw), y * cw);
+    return { gray: out, w: cw, h: ch, rect: [x0, y0, x1, y1] };
   }
 
   /** Downscale gray (box filter) so longest side <= MAX_DIM. */
@@ -196,6 +217,6 @@
     return { gray: out, w: nw, h: nh };
   }
 
-  const api = { MAX_DIM, toGray, gaussian, otsu, binarize, traceRings, simplifyRing, dropCollinear, trace, limitSize };
+  const api = { MAX_DIM, toGray, gaussian, otsu, binarize, traceRings, simplifyRing, dropCollinear, trace, limitSize, cropGray, centroid };
   if (typeof module !== "undefined" && module.exports) module.exports = api; else root.I2D_TRACE = api;
 })(typeof self !== "undefined" ? self : this);
