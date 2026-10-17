@@ -181,23 +181,24 @@ def main():
         check("corrupt image gives clear message", "cannot decode" in status().lower(), status())
         page.click("#srcTabs button[data-tab=url]"); page.fill("#urlIn", "https://example.invalid/a.png"); page.click("#urlGo"); page.wait_for_timeout(2500)
         check("URL fetch failure explains CORS/save-upload", "upload" in status().lower() and "CORS" in status(), status())
-        # URL success path: local http server with CORS header
-        import http.server, threading, functools
-        class H(http.server.SimpleHTTPRequestHandler):
-            def end_headers(self):
-                if self.path.startswith("/cors/"): self.send_header("Access-Control-Allow-Origin", "*")
-                super().end_headers()
-            def log_message(self, *a): pass
-        os.makedirs(os.path.join(tmp, "srv", "cors"), exist_ok=True); os.makedirs(os.path.join(tmp, "srv", "nocors"), exist_ok=True)
-        shutil.copy(IMG, os.path.join(tmp, "srv", "cors", "t.png")); shutil.copy(IMG, os.path.join(tmp, "srv", "nocors", "t.png"))
-        srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), functools.partial(H, directory=os.path.join(tmp, "srv")))
-        threading.Thread(target=srv.serve_forever, daemon=True).start(); port = srv.server_address[1]
-        page.fill("#urlIn", f"http://127.0.0.1:{port}/nocors/t.png"); page.click("#urlGo"); page.wait_for_timeout(1000)
-        check("URL without CORS header -> friendly message", "CORS" in status(), status())
-        page.fill("#urlIn", f"http://127.0.0.1:{port}/cors/t.png"); page.click("#urlGo")
-        page.wait_for_function("document.getElementById('status').textContent.startsWith('Traced')", timeout=10000)
-        check("URL with CORS header loads + traces", page.locator("#list li[data-id]").count() == 8)
-        srv.shutdown()
+        # URL success path: local http server with CORS header (skipped on https pages: Chrome blocks https -> http://127.0.0.1 as mixed content / private-network access)
+        if not URL.startswith("https:"):
+            import http.server, threading, functools
+            class H(http.server.SimpleHTTPRequestHandler):
+                def end_headers(self):
+                    if self.path.startswith("/cors/"): self.send_header("Access-Control-Allow-Origin", "*")
+                    super().end_headers()
+                def log_message(self, *a): pass
+            os.makedirs(os.path.join(tmp, "srv", "cors"), exist_ok=True); os.makedirs(os.path.join(tmp, "srv", "nocors"), exist_ok=True)
+            shutil.copy(IMG, os.path.join(tmp, "srv", "cors", "t.png")); shutil.copy(IMG, os.path.join(tmp, "srv", "nocors", "t.png"))
+            srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), functools.partial(H, directory=os.path.join(tmp, "srv")))
+            threading.Thread(target=srv.serve_forever, daemon=True).start(); port = srv.server_address[1]
+            page.fill("#urlIn", f"http://127.0.0.1:{port}/nocors/t.png"); page.click("#urlGo"); page.wait_for_timeout(1000)
+            check("URL without CORS header -> friendly message", "CORS" in status(), status())
+            page.fill("#urlIn", f"http://127.0.0.1:{port}/cors/t.png"); page.click("#urlGo")
+            page.wait_for_function("document.getElementById('status').textContent.startsWith('Traced')", timeout=10000)
+            check("URL with CORS header loads + traces", page.locator("#list li[data-id]").count() == 8)
+            srv.shutdown()
 
         # --- camera (fake device)
         page.click("#srcTabs button[data-tab=cam]"); page.click("#camStart"); page.wait_for_function("!document.getElementById('camShot').disabled", timeout=8000)
