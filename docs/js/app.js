@@ -65,7 +65,7 @@ async function camStart(){
   try{
     if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia) throw new Error('not supported (needs HTTPS or localhost)');
     stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:'environment'},width:{ideal:1920}},audio:false});
-    $('video').srcObject=stream; await $('video').play();
+    const v=$('video'); v.setAttribute('playsinline',''); v.muted=true; v.srcObject=stream; await v.play();
     $('camShot').disabled=false; $('camStop').disabled=false; setStatus('Camera on');
   }catch(e){ setStatus('Camera unavailable: '+e.message+' (needs HTTPS or localhost)',true); }
 }
@@ -221,17 +221,45 @@ svgEl.addEventListener('pointerdown',e=>{
     const id=e.target.dataset&&e.target.dataset.id; if(id!==undefined) toggle(+id);
   }
 });
+svgEl.addEventListener('pointercancel',()=>{ if(S.drag){S.drag=null; renderSvg();} });
 svgEl.addEventListener('pointermove',e=>{
+  if(e.pointerType==='touch'&&!S.drag) return;   // no hover highlight on touch
   if(S.drag){ const [x,y]=pt(e); S.drag[2]=x; S.drag[3]=y; renderSvg(); return; }
   if(S.tool==='contour'){ const id=e.target.dataset&&e.target.dataset.id; const n=id!==undefined?+id:null; if(n!==S.hl){S.hl=n; renderSvg();} }
 });
-svgEl.addEventListener('pointerup',()=>{
+svgEl.addEventListener('pointerup',e=>{
   if(!S.drag) return; const r=normRect(S.drag); S.drag=null;
   if(r[2]-r[0]>3&&r[3]-r[1]>3){ S.areaN++; S.areas.push({rect:r,label:'AREA'+S.areaN}); }
   renderAll();
 });
 
 // ---------- export (all in the browser)
+let lastFile=null;
+const mkFile=(f,type)=>new File([f.bytes],f.filename,{type:type||f.mime});
+function canShareFiles(){
+  if(!navigator.share||!navigator.canShare) return false;
+  try{ return navigator.canShare({files:[new File([new Uint8Array(1)],'x.dxf',{type:'application/octet-stream'})]}); }catch(e){ return false; }
+}
+// Share sheet (iOS "Save to Files", AirDrop, ...). Tries the real MIME type first, then a generic one.
+async function shareFile(f){
+  for(const type of [f.mime,'application/octet-stream']){
+    const file=mkFile(f,type);
+    try{ if(!navigator.canShare||navigator.canShare({files:[file]})){ await navigator.share({files:[file],title:f.filename}); return true; } }
+    catch(e){ if(e&&e.name==='AbortError') return true; }   // user dismissed the sheet
+  }
+  return false;
+}
+// Blob link first (works in iOS Safari 13+); share sheet as fallback when the download attribute is unsupported or the click throws.
+async function saveFile(f){
+  const a=document.createElement('a');
+  if(!('download' in a)){ if(await shareFile(f)) return 'share'; throw new Error('Could not start the download in this browser. Try a desktop browser.'); }
+  try{
+    a.href=URL.createObjectURL(new Blob([f.bytes],{type:f.mime})); a.download=f.filename; a.rel='noopener'; a.style.display='none';
+    document.body.appendChild(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(a.href),60000);
+    return 'download';
+  }catch(e){ if(await shareFile(f)) return 'share'; throw e; }
+}
+$('share').onclick=async()=>{ if(!lastFile) return; const ok=await shareFile(lastFile); setStatus(ok?`Shared ${lastFile.filename}`:'Sharing is not available here: use Download DXF',!ok); };
 $('download').onclick=async()=>{
   const limit=$('limitArea').checked, p=params();
   try{
@@ -239,9 +267,10 @@ $('download').onclick=async()=>{
     if(!S.paths.length) throw new Error('Nothing to export: no shapes found with these settings');
     const r=await D.exportDxf(S.paths,{pxW:S.W,pxH:S.H,scale:p.width/S.W,unit:p.unit,selected:[...S.selected].sort((a,b)=>a-b),
       regions:limit?regions():[],clip:$('clip').checked,split:$('split').value,groupBy:$('groupBy').value,zeroOrigin:$('zero').checked});
-    const a=document.createElement('a'); a.href=URL.createObjectURL(new Blob([r.bytes],{type:r.mime})); a.download=r.filename; document.body.appendChild(a); a.click(); a.remove();
-    setTimeout(()=>URL.revokeObjectURL(a.href),10000);
-    setStatus(`Downloaded ${r.filename} (${r.paths} paths, ${r.groups} group(s))`);
+    lastFile={bytes:r.bytes,mime:r.mime,filename:r.filename};
+    const how=await saveFile(lastFile);
+    setStatus(`${how==='share'?'Shared':'Downloaded'} ${r.filename} (${r.paths} paths, ${r.groups} group(s))`);
+    if(canShareFiles()) $('share').hidden=false;
     window.__lastExport={filename:r.filename,paths:r.paths,groups:r.groups};
   }catch(e){ setStatus(e.message,true); }
 };
