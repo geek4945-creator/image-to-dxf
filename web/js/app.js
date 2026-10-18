@@ -2,8 +2,8 @@
 const $ = id => document.getElementById(id);
 const S = {id:null, gray:null, W:0, H:0, fullGray:null, fullW:0, fullH:0, crop:null, cropSel:null, imgURL:null, fullURL:null, cropURL:null, maskURL:null,
            paths:[], items:[], selected:new Set(), cells:new Set(), areas:[], zones:[], zoneN:0, zsel:null, tabbed:new Set(), mask:null, plan:null,
-           tool:'contour', hl:null, drag:null, edit:null, seq:0, areaN:0, loadTok:0};
-window.__i2d = {S, dxfExtents:()=>dxfExtents(), exportBox:()=>exportBox()};   // read-only debug/test hook
+           tool:'contour', hl:null, drag:null, edit:null, seq:0, areaN:0, loadTok:0, undo:[], edits:0, rs:null, sec:null};
+window.__i2d = {S, dxfExtents:()=>dxfExtents(), exportBox:()=>exportBox(), refresh:()=>renderAll()};   // read-only debug/test hook
 const NUM = ['threshold','blur','speckle','tolerance','min_feature'];
 const BOOL = ['auto','invert','holes','drop_frame'];
 
@@ -11,12 +11,22 @@ function setStatus(t, err){ const s=$('status'); s.textContent=t; s.className='s
 const fmt=(v,d=6)=>String(+Number(v).toPrecision(d));
 function params(){
   const sc=computeScale(); const p={unit:$('unit').value, scale:sc.sx, scaleY:sc.sy, width:sc.sx*(S.W||1)};
-  NUM.forEach(k=>p[k]=parseFloat($(k).value)); BOOL.forEach(k=>p[k]=$(k).checked); return p;
+  NUM.forEach(k=>p[k]=parseFloat($(k).value)); BOOL.forEach(k=>p[k]=$(k).checked);
+  if(assessOn()){                         // crop-local settings replace the global processing sliders
+    const avg=Math.sqrt((sc.sx*sc.sy)||1);
+    Object.assign(p,{auto:$('asAuto').checked,threshold:+$('asThr').value,invert:$('asInvert').checked,blur:+$('asBlur').value,speckle:+$('asSpeckle').value,tolerance:+$('asSimp').value*avg,min_feature:+$('asMin').value*avg});
+  }
+  return p;
+}
+const assessOn=()=>!!S.crop&&$('asOn').checked;
+function traceGray(){                       // source pixels for tracing (optionally contrast-stretched for dim crops)
+  if(assessOn()&&$('asNorm').checked){ if(S._st&&S._st.src===S.gray) return S._st.g; const g=T.stretch(S.gray); S._st={src:S.gray,g}; return g; }
+  return S.gray;
 }
 // image-derived state (reset when an image is loaded or cleared)
 function resetState(){
   Object.assign(S,{paths:[],items:[],selected:new Set(),cells:new Set(),areas:[],areaN:0,zones:[],zoneN:0,zsel:null,tabbed:new Set(),crop:null,cropSel:null,
-    mask:null,maskURL:null,hl:null,drag:null,edit:null,plan:null,info:null});
+    mask:null,maskURL:null,hl:null,drag:null,edit:null,plan:null,info:null,undo:[],edits:0,rs:null,sec:null});
 }
 function revokeImageURLs(){ [S.fullURL,S.cropURL].forEach(u=>{ if(u) URL.revokeObjectURL(u); }); S.fullURL=S.cropURL=S.imgURL=null; }
 
@@ -121,10 +131,10 @@ async function retrace(first){
   await new Promise(r=>setTimeout(r,0)); if(seq!==S.seq) return;
   if(!(params().scale>0&&params().scaleY>0)) return setStatus('Enter a positive output size',true);
   try{
-    const t0=performance.now(); let r;
+    const t0=performance.now(); let r; const hadEdits=S.edits>0&&!first;
     // Tolerance / min-feature are in output units, and the output scale depends on the traced shapes' box, so settle it (max 3 passes).
     for(let pass=0;;pass++){
-      const p=params(); r=T.trace(S.gray,S.W,S.H,p);
+      const p=params(); r=T.trace(traceGray(),S.W,S.H,p);
       if(seq!==S.seq) return;
       const changed = r.polys.length!==S.paths.length;
       S.paths=r.polys; S.items=r.items; S.mask=r.mask; S.maskURL=null; S.info=r.info;
@@ -133,7 +143,8 @@ async function retrace(first){
       const sc=computeScale();
       if(pass>=2||!sc.ok||(Math.abs(sc.sx/p.scale-1)<0.02&&Math.abs(sc.sy/p.scaleY-1)<0.02)) break;
     }
-    setStatus(`Traced in ${Math.round(performance.now()-t0)} ms`); renderAll();
+    S.undo=[]; S.edits=0; S.rs=null; renderUndo();
+    setStatus(`Traced in ${Math.round(performance.now()-t0)} ms`+(hadEdits?' · merge / re-scan edits were discarded by the re-trace':'')); renderAll();
     const e=dxfExtents(), u=$('unit').value;
     $('info').textContent=`${r.info.paths} contours · ${r.info.vertices} vertices`+(e?` · DXF ${fmt(e.w,5)}×${fmt(e.h,5)} ${u}`:'')+` · ${r.info.dropped} dropped`;
   }catch(e){ setStatus(e.message,true); }
@@ -225,7 +236,7 @@ function syncSize(except){        // refresh derived fields, editability and the
 let curUnit='mm';
 function convertUnits(){            // keep sizes physically the same when switching mm <-> in
   const u=$('unit').value; if(u===curUnit) return; const f=u==='in'?1/25.4:25.4;
-  [['width',0],['height',0],['tolerance',1],['min_feature',1],['cell',0],['tabW',0],['tabS',0]].forEach(([k,slider])=>{
+  [['width',0],['height',0],['tolerance',1],['min_feature',1],['cell',0],['tabW',0],['tabS',0],['mergeTol',0],['tblW',0],['tblH',0],['tblOv',0],['tblParkX',0],['tblParkY',0]].forEach(([k,slider])=>{
     const el=$(k), v=parseFloat(el.value)*f;
     if(slider){ const cfg={tolerance:{mm:[5,0.05],in:[0.2,0.001]},min_feature:{mm:[50,0.5],in:[2,0.01]}}[k][u]; el.max=cfg[0]; el.step=cfg[1]; el.value=Math.min(cfg[0],v); const o=$('o_'+k); if(o) o.textContent=el.value; }
     else{ el.value=fmt(v,7); el.dataset.last=el.value; }
@@ -248,7 +259,8 @@ function onSizeEdit(k){
     if(k==='unit') convertUnits();
     if((k==='sizeBy'||k==='sizeRef')&&lastSc&&lastSc.ok){            // keep today's physical scale; just re-express it in the new mode / reference
       writeFields(lastSc,[]); }
-    recalc(); schedule(); renderGrid(); renderSvg(); renderNotes(); };
+    if(k==='unit'){ tblSave(); } if(!S.edits) schedule();
+    recalc(); renderGrid(); renderSvg(); renderNotes(); };
   el.addEventListener('input',h); el.addEventListener('change',h);
 });
 
@@ -311,7 +323,7 @@ document.addEventListener('keydown',e=>{
 
 // ---------- crop / focus
 function renderCrop(){
-  $('cropApply').disabled=!S.cropSel; $('cropReset').disabled=!S.crop;
+  $('cropApply').disabled=!S.cropSel; $('cropReset').disabled=!S.crop; $('asRow').hidden=!S.crop;
   $('cropNote').textContent=S.crop?`Cropped to x ${S.crop[0]}–${S.crop[2]}, y ${S.crop[1]}–${S.crop[3]} px of the ${S.fullW}×${S.fullH} px image (${S.W}×${S.H} px traced; DXF origin = crop corner)`
     :(S.cropSel?'Crop area drawn: press "Focus / Crop to area"':'No crop');
 }
@@ -344,18 +356,25 @@ function tabOpts(){
 }
 function exportOpts(){
   const sc=computeScale(), split=$('split').value;
-  return {pxW:S.W,pxH:S.H,scale:sc.sx,scaleY:sc.sy,unit:$('unit').value,selected:effectiveSelected(),
-    regions:$('limitArea').checked?regions():[],clip:$('clip').checked,split,groupBy:$('groupBy').value,zeroOrigin:$('zero').checked,
-    insideFirst:$('insideFirst').checked,nearest:$('nearest').checked,innerOuterLayers:$('ioLayers').checked&&split==='none',
+  const table=tableOpts(), splitEff=table.on&&split==='files'?'layers':split;
+  return {pxW:S.W,pxH:S.H,scale:sc.sx,scaleY:sc.sy,unit:$('unit').value,selected:effectiveSelected(),table,
+    regions:$('limitArea').checked?regions():[],clip:$('clip').checked,split:splitEff,groupBy:$('groupBy').value,zeroOrigin:$('zero').checked,
+    insideFirst:$('insideFirst').checked,nearest:$('nearest').checked,innerOuterLayers:$('ioLayers').checked&&splitEff==='none',
     isHole:S.items.map(i=>i.hole),tabs:tabOpts()};
 }
 function updatePlan(){
-  S.plan=null; $('tabNote').textContent=''; $('orderNote').textContent='';
+  S.plan=null; S.sec=null; $('tabNote').textContent=''; $('orderNote').textContent=''; $('tblNote').textContent='';
   if(!S.items.length||!computeScale().ok) return;
   const o=exportOpts();
-  const need=o.tabs||o.insideFirst||o.nearest||$('showOrder').checked;
+  const need=o.tabs||o.insideFirst||o.nearest||$('showOrder').checked||o.table.on;
   if(!need||!o.selected.length){ if(o.tabs) $('tabNote').textContent='Nothing selected for export.'; return; }
   try{ S.plan=D.buildPlan(S.paths,o); }catch(e){ $('tabNote').textContent=e.message; return; }
+  if(o.table.on){
+    try{ S.sec=D.sectionize(S.plan.entities,Object.assign({unit:o.unit},o.table),rootsOf());
+      const N=S.sec.passes.length, w=S.sec.warnings;
+      $('tblNote').textContent=(N===1?'The job fits on the table: 1 pass (park marker still added).':`${N} passes (${S.sec.cols.length} × ${S.sec.rows.length}). Next to the preview: dashed frames = table position, shaded blocks = what each pass cuts.`)+(w.length?' ⚠ '+w.join(' ⚠ '):''); }
+    catch(e){ $('tblNote').textContent='⚠ '+e.message; }
+  }
   const st=S.plan.stats;
   if(o.insideFirst||o.nearest) $('orderNote').textContent=`DXF entity order: ${o.insideFirst?`inner contours first (deepest nesting ${st.maxDepth} → 0)`:'file order'}${o.nearest?', nearest-neighbour within each level':''} · ${st.units} cut(s).`
     +($('ioLayers').checked&&o.split!=='none'?' (CUT_INNER/OUTER layers only apply to one-file mode)':'');
@@ -371,7 +390,7 @@ $('tabsClear').onclick=()=>{ S.tabbed=new Set(); $('tabsAll').checked=false; ref
 
 // ---------- rendering
 const NS='http://www.w3.org/2000/svg';
-function renderAll(){ recalc(); renderSvg(); renderList(); renderNotes(); renderZones(); renderCrop(); }
+function renderAll(){ recalc(); renderSvg(); renderList(); renderNotes(); renderZones(); renderCrop(); renderMergeScope(); renderUndo(); if(S.rs) rsCompute(); }
 function renderGrid(){ if(S.gray) renderSvg(); }
 const HANDLES={nw:[0,0],n:[.5,0],ne:[1,0],e:[1,.5],se:[1,1],s:[.5,1],sw:[0,1],w:[0,.5]};
 function rectSvg(kind,id,rect,cls,label){
@@ -417,7 +436,8 @@ function renderSvg(){
   }
   S.zones.forEach(z=>{ h+=rectSvg('zone',z.id,z.rect,'zone'+(z.on?'':' off')+(z.id===S.zsel?' sel':''),`${z.label} ${z.on?'ON':'OFF'}`); });
   if(S.cropSel){ const [x0,y0,x1,y1]=S.cropSel; h+=`<path class="cropdim" fill-rule="evenodd" d="M0 0H${S.W}V${S.H}H0Z M${x0} ${y0}H${x1}V${y1}H${x0}Z"/>`+rectSvg('crop',0,S.cropSel,'cropsel','CROP'); }
-  if(S.drag){const [x0,y0,x1,y1]=normRect(S.drag.rect); h+=`<rect class="${S.drag.kind==='zone'?'zone sel':S.drag.kind==='crop'?'cropsel':'area'}" x="${x0}" y="${y0}" width="${x1-x0}" height="${y1-y0}" style="pointer-events:none"/>`;}
+  if(S.drag){const [x0,y0,x1,y1]=normRect(S.drag.rect); h+=`<rect class="${S.drag.kind==='zone'?'zone sel':S.drag.kind==='crop'?'cropsel':S.drag.kind==='rescan'?'rsarea':'area'}" x="${x0}" y="${y0}" width="${x1-x0}" height="${y1-y0}" style="pointer-events:none"/>`;}
+  h+=rescanSvg()+tableSvg();
   svg.innerHTML=h;
 }
 ['showImg','showMask','showVec'].forEach(k=>$(k).onchange=renderSvg);
@@ -475,7 +495,7 @@ svgEl.addEventListener('pointerdown',e=>{
     } else S.drag={kind:S.tool,rect:[x,y,x,y]};
     svgEl.setPointerCapture(e.pointerId); e.preventDefault(); renderSvg();
   }
-  else if(S.tool==='region'){ S.drag={kind:'region',rect:[x,y,x,y]}; svgEl.setPointerCapture(e.pointerId); }
+  else if(S.tool==='region'||S.tool==='rescan'){ S.drag={kind:S.tool,rect:[x,y,x,y]}; svgEl.setPointerCapture(e.pointerId); if(S.tool==='rescan') e.preventDefault(); }
   else if(S.tool==='cell'){
     const g=gridDims(); const c=Math.min(g.cols-1,Math.floor(x/g.cw)), r=Math.min(g.rows-1,Math.floor(y/g.ch)); const k=r+','+c;
     S.cells.has(k)?S.cells.delete(k):S.cells.add(k); renderAll();
@@ -497,9 +517,154 @@ svgEl.addEventListener('pointerup',e=>{
     if(dr.kind==='region'){ S.areaN++; S.areas.push({rect:r,label:'AREA'+S.areaN}); }
     else if(dr.kind==='zone') addZone(r);
     else if(dr.kind==='crop') S.cropSel=r;
+    else if(dr.kind==='rescan'){ S.rs={rect:r,res:null}; rsCompute(); }
   }
   renderAll();
 });
+
+// ---------- undoable contour edits (merge touching cuts, re-scan)
+function pushUndo(label){ S.undo.push({label,paths:S.paths,items:S.items,selected:new Set(S.selected),tabbed:new Set(S.tabbed)}); if(S.undo.length>20) S.undo.shift(); renderUndo(); }
+function renderUndo(){ const b=$('undoEdit'); b.disabled=!S.undo.length; b.title=S.undo.length?'Undo: '+S.undo[S.undo.length-1].label:'Nothing to undo'; }
+function setContours(polys,holes,selIdx,label){
+  pushUndo(label); const sc=computeScale();
+  S.paths=polys; S.items=polys.map((q,i)=>T.makeItem(q,holes[i],i,sc.sx||1,sc.sy||1));
+  S.selected=new Set(selIdx); S.tabbed=new Set(); S.edits++; S.hl=null;
+}
+$('undoEdit').onclick=()=>{
+  const u=S.undo.pop(); if(!u) return;
+  Object.assign(S,{paths:u.paths,items:u.items,selected:u.selected,tabbed:u.tabbed,hl:null}); S.edits=Math.max(0,S.edits-1);
+  $('mergeNote').textContent=''; if(S.rs) rsCompute(); setStatus('Undid: '+u.label); renderAll(); renderUndo();
+};
+// --- merge touching cuts
+function mergeScopeIds(){
+  const v=$('mergeScope').value;
+  if(v==='all') return null; if(v==='selected') return [...S.selected];
+  const z=S.zones.find(q=>'z'+q.id===v); return z?zoneIds(z):[];
+}
+function renderMergeScope(){
+  const sel=$('mergeScope'), cur=sel.value;
+  sel.innerHTML='<option value="all">all contours</option><option value="selected">only selected</option>'+S.zones.map(z=>`<option value="z${z.id}">inside zone ${z.label}</option>`).join('');
+  sel.value=[...sel.options].some(o=>o.value===cur)?cur:'all';
+  $('mergeGo').disabled=!S.paths.length;
+}
+$('mergeGo').onclick=()=>{
+  if(!S.paths.length) return; const sc=computeScale(), u=$('unit').value, tol=Math.max(0,parseFloat($('mergeTol').value)||0), tolPx=tol/Math.sqrt(sc.sx*sc.sy);
+  const scope=mergeScopeIds(), n0=S.paths.length;
+  if(scope&&!scope.length){ $('mergeNote').textContent='Nothing in that scope (select contours or choose another scope).'; return; }
+  const r=D.mergeContours(S.paths,scope,tolPx);
+  if(!r.clusters){ $('mergeNote').textContent=`Nothing to merge: no contours touch within ${fmt(tol,4)} ${u}. Still ${n0} contours. (1 image pixel = ${fmt(Math.sqrt(sc.sx*sc.sy),3)} ${u}: shapes separated by a thin gap need a tolerance of at least that gap.)`; return; }
+  const rem=new Set(r.removed), polys=[], holes=[], sel=[];
+  S.paths.forEach((q,i)=>{ if(rem.has(i)) return; if(S.selected.has(i)) sel.push(polys.length); polys.push(q); holes.push(S.items[i].hole); });
+  r.added.forEach(a=>{ if(a.from.some(i=>S.selected.has(i))) sel.push(polys.length); polys.push(a.pts); holes.push(a.hole); });
+  setContours(polys,holes,sel,'merge touching cuts');
+  $('mergeNote').textContent=`Merged ${r.before} touching contours into ${r.after} (${r.clusters} group${r.clusters>1?'s':''}). All contours: ${n0} → ${polys.length}. Undo restores them.`;
+  setStatus(`Merged ${r.before} → ${r.after} contours`); renderAll();
+};
+['mergeScope','mergeTol'].forEach(k=>$(k).addEventListener('input',()=>{ $('mergeNote').textContent=''; }));
+
+// --- re-scan area
+const RSK=['rsThr','rsBlur','rsSpeckle','rsSimp','rsMin'], RSO={rsThr:'o_rsThr',rsBlur:'o_rsBlur',rsSpeckle:'o_rsSpeckle',rsSimp:'o_rsSimp',rsMin:'o_rsMin'};
+function rsCompute(){
+  const rs=S.rs; $('rsAdd').disabled=true; $('rsClear').disabled=!rs;
+  if(!rs||!rs.rect||!S.gray){ $('rsNote').textContent=''; return; }
+  const sc=computeScale(); if(!sc.ok) return;
+  const c=T.cropGray(S.gray,S.W,S.H,rs.rect.map(Math.round));
+  if(c.w<3||c.h<3){ $('rsNote').textContent='Area too small'; rs.res=null; return; }
+  let g=c.gray; if($('rsNorm').checked) g=T.stretch(g);
+  const avg=Math.sqrt(sc.sx*sc.sy);
+  const p={unit:$('unit').value,scale:sc.sx,scaleY:sc.sy,threshold:+$('rsThr').value,auto:$('rsAuto').checked,invert:$('rsInvert').checked,blur:+$('rsBlur').value,speckle:+$('rsSpeckle').value,
+    tolerance:+$('rsSimp').value*avg,min_feature:+$('rsMin').value*avg,holes:true,drop_frame:false};
+  const r=T.trace(g,c.w,c.h,p), ox=c.rect[0], oy=c.rect[1];
+  const polys=r.polys.map(q=>q.map(([x,y])=>[x+ox,y+oy])), holes=r.items.map(i=>i.hole);
+  const dup=polys.map((q,k)=>{                                   // already-existing near-identical contour?
+    let x0=Infinity,y0=Infinity,x1=-Infinity,y1=-Infinity; q.forEach(([x,y])=>{ if(x<x0)x0=x; if(x>x1)x1=x; if(y<y0)y0=y; if(y>y1)y1=y; });
+    const tol=Math.max(2,0.04*Math.max(x1-x0,y1-y0));
+    return S.items.findIndex(it=>it.hole===holes[k]&&Math.abs(it.bbox[0]-x0)<=tol&&Math.abs(it.bbox[1]-y0)<=tol&&Math.abs(it.bbox[2]-x1)<=tol&&Math.abs(it.bbox[3]-y1)<=tol);
+  });
+  rs.res={polys,holes,dup,rect:c.rect};
+  const nd=dup.filter(i=>i>=0).length, nn=polys.length-nd;
+  $('rsNote').textContent=polys.length?`Found ${polys.length} contour(s) in the area: ${nn} new, ${nd} already in the cuts.`:'Nothing found in the area with these settings (try Local auto, Stretch contrast, or a different threshold).';
+  $('rsAdd').disabled=!polys.length;
+}
+function rsRefresh(){ rsCompute(); renderSvg(); }
+RSK.forEach(k=>$(k).addEventListener('input',()=>{ $(RSO[k]).textContent=$(k).value; rsRefresh(); }));
+['rsAuto','rsNorm','rsInvert'].forEach(k=>$(k).addEventListener('input',rsRefresh));
+$('rsReplace').addEventListener('input',()=>{ $('rsNote').textContent=$('rsNote').textContent; });
+$('rsDraw').onclick=()=>{ if(!S.gray) return setStatus('Load an image first',true); setTool('rescan'); setStatus('Drag a rectangle over the missed shape, tune the settings, then Add to cuts'); };
+$('rsClear').onclick=()=>{ S.rs=null; rsCompute(); renderSvg(); };
+$('rsAdd').onclick=()=>{
+  const res=S.rs&&S.rs.res; if(!res||!res.polys.length) return;
+  const rep=$('rsReplace').checked, rect=res.rect, polys=[], holes=[], sel=[];
+  S.paths.forEach((q,i)=>{ const it=S.items[i]; if(rep&&it.bcx>=rect[0]&&it.bcx<=rect[2]&&it.bcy>=rect[1]&&it.bcy<=rect[3]) return; if(S.selected.has(i)) sel.push(polys.length); polys.push(q); holes.push(it.hole); });
+  const n0=S.paths.length, kept=polys.length; let added=0;
+  res.polys.forEach((q,k)=>{ if(!rep&&res.dup[k]>=0) return; sel.push(polys.length); polys.push(q); holes.push(res.holes[k]); added++; });
+  if(!added){ $('rsNote').textContent='Everything found is already in the cuts.'; return; }
+  setContours(polys,holes,sel,'re-scan area'); S.rs=null;
+  $('rsNote').textContent=`Added ${added} contour(s)`+(rep?` (replaced ${n0-kept} existing in the area)`:'')+`. Contours: ${n0} → ${polys.length}. Undo restores them.`;
+  setStatus(`Re-scan added ${added} contour(s)`); setTool('contour');
+};
+function rescanSvg(){
+  const rs=S.rs; if(!rs||!rs.rect) return '';
+  const [x0,y0,x1,y1]=rs.rect; let h=`<rect class="rsarea" x="${x0}" y="${y0}" width="${x1-x0}" height="${y1-y0}" style="pointer-events:none"/>`;
+  if(rs.res) rs.res.polys.forEach((q,k)=>{ h+=`<polygon class="rspoly${rs.res.dup[k]>=0?' dup':''}" points="${q.map(p=>p.join(',')).join(' ')}"/>`; });
+  return h;
+}
+
+// --- crop assessment (local settings for the whole cropped section)
+$('asOn').addEventListener('input',()=>{ $('asBox').hidden=!$('asOn').checked; schedule(); });
+[['asThr','o_asThr'],['asBlur','o_asBlur'],['asSpeckle','o_asSpeckle'],['asSimp','o_asSimp'],['asMin','o_asMin']].forEach(([k,o])=>$(k).addEventListener('input',()=>{ $(o).textContent=$(k).value; schedule(); }));
+['asAuto','asNorm','asInvert'].forEach(k=>$(k).addEventListener('input',schedule));
+$('asGo').onclick=async()=>{ if(!S.crop) return setStatus('Crop an area first',true); $('asOn').checked=true; $('asBox').hidden=false; await retrace(true); setStatus('Re-assessed the whole cropped section with local settings'); };
+
+// ---------- table size & material moves
+const TBL_PRESETS={'24x24':[24,24],'24x48':[24,48],'48x48':[48,48],'48x96':[48,96],'60x120':[60,120]}, TBL_KEY='i2d.table';
+function tableOpts(){
+  const g=k=>parseFloat($(k).value);
+  return {on:$('tblOn').checked,L:g('tblW'),H:g('tblH'),overlap:Math.max(0,g('tblOv')||0),corner:$('tblCorner').value,mode:$('tblMode').value,park:$('tblPark').value,parkX:g('tblParkX')||0,parkY:g('tblParkY')||0,
+    marks:$('tblMarks').checked,single:$('tblOut').value==='single'};
+}
+function tblSave(){
+  try{ const k=UNIT_PER_INCH(), g=id=>(parseFloat($(id).value)||0)/k;
+    localStorage.setItem(TBL_KEY,JSON.stringify({preset:$('tblPreset').value,w:g('tblW'),h:g('tblH'),ov:g('tblOv'),corner:$('tblCorner').value,mode:$('tblMode').value,park:$('tblPark').value,px:g('tblParkX'),py:g('tblParkY'),marks:$('tblMarks').checked,out:$('tblOut').value})); }catch(e){}
+}
+function tblLoad(){
+  const d={preset:'48x48',w:48,h:48,ov:1,corner:'bl',mode:'clip',park:'bl',px:0,py:0,marks:false,out:'files'};
+  try{ Object.assign(d,JSON.parse(localStorage.getItem(TBL_KEY)||'{}')); }catch(e){}
+  const k=UNIT_PER_INCH(), set=(id,v)=>{ $(id).value=fmt(v*k,6); $(id).dataset.last=$(id).value; };
+  set('tblW',d.w); set('tblH',d.h); set('tblOv',d.ov); set('tblParkX',d.px); set('tblParkY',d.py);
+  $('tblPreset').value=[...$('tblPreset').options].some(o=>o.value===d.preset)?d.preset:'custom';
+  $('tblCorner').value=d.corner; $('tblMode').value=d.mode; $('tblPark').value=d.park; $('tblMarks').checked=!!d.marks; $('tblOut').value=d.out;
+  $('tblParkXY').hidden=$('tblPark').value!=='custom';
+}
+const rootCache=new WeakMap();
+function rootsOf(){ let r=rootCache.get(S.paths); if(!r){ r=D.nestRoots(S.paths); rootCache.set(S.paths,r); } return r; }
+$('tblOn').addEventListener('input',()=>{ $('tblBox').hidden=!$('tblOn').checked; refresh(); });
+$('tblPreset').addEventListener('input',()=>{
+  const v=TBL_PRESETS[$('tblPreset').value]; if(v){ const k=UNIT_PER_INCH(); $('tblW').value=fmt(v[0]*k,6); $('tblH').value=fmt(v[1]*k,6); }
+  tblSave(); refresh(); });
+['tblW','tblH'].forEach(id=>$(id).addEventListener('input',()=>{
+  const k=UNIT_PER_INCH(), w=parseFloat($('tblW').value)/k, h=parseFloat($('tblH').value)/k;
+  const m=Object.keys(TBL_PRESETS).find(n=>Math.abs(TBL_PRESETS[n][0]-w)<1e-6&&Math.abs(TBL_PRESETS[n][1]-h)<1e-6); $('tblPreset').value=m||'custom'; tblSave(); refresh(); }));
+['tblOv','tblCorner','tblMode','tblPark','tblParkX','tblParkY','tblMarks','tblOut'].forEach(id=>{ const f=()=>{ $('tblParkXY').hidden=$('tblPark').value!=='custom'; tblSave(); refresh(); }; $(id).addEventListener('input',f); $(id).addEventListener('change',f); });
+function tableSvg(){
+  const sec=S.sec; if(!sec||!sec.passes.length||!$('tblOn').checked) return '';
+  const sc=computeScale(), T0=tableOpts(), X=v=>+(v/sc.sx).toFixed(2), Y=v=>+(S.H-v/sc.sy).toFixed(2), k=S.W/(($('svg').getBoundingClientRect().width)||S.W);
+  let h='';
+  sec.passes.forEach(P=>{
+    const [rx0,ry0,rx1,ry1]=P.region, a=X(rx0), b=X(rx1), c=Y(ry1), d=Y(ry0);
+    h+=`<rect class="tblreg p${P.n%2}" x="${a}" y="${c}" width="${b-a}" height="${d-c}"/>`;
+  });
+  sec.passes.forEach(P=>{
+    const wx0=X(P.ox), wx1=X(P.ox+T0.L), wy0=Y(P.oy+T0.H), wy1=Y(P.oy);
+    h+=`<rect class="tblwin" x="${wx0}" y="${wy0}" width="${wx1-wx0}" height="${wy1-wy0}"/>`;
+    const [rx0,ry0,rx1,ry1]=P.region, a=X(rx0), b=X(rx1), c=Y(ry1), d=Y(ry0);
+    h+=`<text class="tbllbl" x="${(a+b)/2}" y="${(c+d)/2}" text-anchor="middle" style="font-size:${16*k}px">${P.label}</text>`;
+    if(P.c>0){ const bx=T0.corner[1]==='r'?b:a; h+=`<path class="tblbrk" d="M${bx} ${c}V${d}"/>`; }
+    if(P.r>0){ const by=T0.corner[0]==='t'?d:c; h+=`<path class="tblbrk" d="M${a} ${by}H${b}"/>`; }
+    h+=`<circle class="tblpark" cx="${X(P.ox+P.park[0])}" cy="${Y(P.oy+P.park[1])}" r="${6*k}"/>`;
+  });
+  return h;
+}
 
 // ---------- export (all in the browser)
 let lastFile=null, dlURL=null;
@@ -530,6 +695,12 @@ async function saveFile(f){
 }
 // DXF check: the numbers below come from re-reading the generated file, not from the on-screen settings.
 function showCheck(r,o){
+  if(r.check.table){
+    const c=r.check, el=$('dxfCheck'), f=v=>(+v.toFixed(3)).toString();
+    el.textContent=`DXF check (re-read from the file${c.files>1?'s':''}): ${c.files} file(s) in ${o.unit}: `+c.perFile.map(q=>`${q.name} ${f(q.width)} × ${f(q.height)}`).join(' · ')+(c.warnings&&c.warnings.length?' · ⚠ '+c.warnings.join(' ⚠ '):' · ✓ each pass fits the table '+f(o.table.L)+' × '+f(o.table.H));
+    el.className='note strong'+(c.warnings&&c.warnings.length?' err':'');
+    return {table:true,files:c.files,perFile:c.perFile,unit:c.unit,ok:c.unit===o.unit&&!(c.warnings&&c.warnings.length),warnings:c.warnings||[]};
+  }
   const c=r.check, u=o.unit, uname=c.unit==='in'?'inches':c.unit==='mm'?'mm':'?', el=$('dxfCheck'), f=v=>(+v.toFixed(4)).toString();
   const b=exportBox(), sc=computeScale(), req=b?{w:b.w*sc.sx,h:b.h*sc.sy}:null, shapes=refName()==='shapes';
   const tol=Math.max(0.005*Math.max(req?req.w:0,req?req.h:0),1e-4)+(o.tabs?o.tabs.width:0);
@@ -553,7 +724,7 @@ $('download').onclick=async()=>{
     setStatus(`${how==='share'?'Shared':'Downloaded'} ${r.filename} (${r.paths} paths, ${r.groups} group(s))`);
     if(canShareFiles()) $('share').hidden=false;
     const chk=showCheck(r,o);
-    window.__lastExport={filename:r.filename,paths:r.paths,groups:r.groups,stats:r.plan.stats,unit:o.unit,check:chk};
+    window.__lastExport={filename:r.filename,paths:r.paths,groups:r.groups,stats:r.plan.stats,unit:o.unit,check:chk,sections:r.sections?r.sections.passes.length:0};
   }catch(e){ setStatus(e.message,true); }
 };
 // ---------- unit default + persistence: inches by default, the choice is remembered on this device
@@ -572,4 +743,5 @@ function initUnit(){
   $('unit').addEventListener('input',()=>{ try{ localStorage.setItem(UNIT_KEY,$('unit').value); }catch(e){} });
 }
 initUnit();
+tblLoad(); $('mergeTol').value=$('unit').value==='in'?0.01:0.25; $('mergeTol').dataset.last=$('mergeTol').value;
 syncSize(); renderAll();

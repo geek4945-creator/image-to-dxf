@@ -189,6 +189,30 @@
     return { mask, polys, items, info };
   }
 
+  /** Contour record (same shape as trace() items) from a px polygon [[x,y]..]; sx/sy = output units per px. */
+  function makeItem(out, hole, id, sx, sy) {
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity, a2 = 0;
+    for (let i = 0, n = out.length; i < n; i++) {
+      const [x, y] = out[i], [u, v] = out[(i + 1) % n];
+      if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; a2 += x * v - u * y;
+    }
+    const c = centroid(out, (x0 + x1) / 2, (y0 + y1) / 2);
+    return { id, hole: !!hole, area: +(Math.abs(a2) / 2 * sx * sy).toFixed(4), w: +((x1 - x0) * sx).toFixed(3), h: +((y1 - y0) * sy).toFixed(3), bbox: [x0, y0, x1, y1],
+      cx: c[0], cy: c[1], bcx: (x0 + x1) / 2, bcy: (y0 + y1) / 2 };
+  }
+
+  /** Contrast stretch (percentile lo..hi -> 0..255), for dim / low-contrast crops. */
+  function stretch(gray, lo = 0.01, hi = 0.99) {
+    const hist = new Float64Array(256); for (let i = 0; i < gray.length; i++) hist[gray[i]]++;
+    let c = 0, a = 0, b = 255; const n = gray.length;
+    for (let t = 0; t < 256; t++) { c += hist[t]; if (c >= n * lo) { a = t; break; } }
+    c = 0; for (let t = 0; t < 256; t++) { c += hist[t]; if (c >= n * hi) { b = t; break; } }
+    if (b - a < 8) return gray;
+    const out = new Uint8Array(n), k = 255 / (b - a);
+    for (let i = 0; i < n; i++) out[i] = Math.max(0, Math.min(255, Math.round((gray[i] - a) * k)));
+    return out;
+  }
+
   /** Area centroid of a closed polygon [[x,y]..]; falls back to (fx,fy) when degenerate. */
   function centroid(q, fx, fy) {
     let a = 0, cx = 0, cy = 0;
@@ -217,6 +241,6 @@
     return { gray: out, w: nw, h: nh };
   }
 
-  const api = { MAX_DIM, toGray, gaussian, otsu, binarize, traceRings, simplifyRing, dropCollinear, trace, limitSize, cropGray, centroid };
+  const api = { MAX_DIM, toGray, gaussian, otsu, binarize, traceRings, simplifyRing, dropCollinear, trace, limitSize, cropGray, centroid, makeItem, stretch };
   if (typeof module !== "undefined" && module.exports) module.exports = api; else root.I2D_TRACE = api;
 })(typeof self !== "undefined" ? self : this);

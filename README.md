@@ -26,6 +26,7 @@ Clear image · output size in inches (default, 10 in wide, `$INSUNITS`=1; choice
 **Tabs / hold-in bridges** (per contour or all outer cuts; width, count or spacing; written as open polylines with gaps; shown in preview) ·
 **Zones** (drag-drawn, movable, resizable, listed; on/off per zone, bulk enable/disable/invert by centre-in-zone; off zones are excluded from export; works on touch) ·
 **Crop / focus** on part of the image (cropped before tracing, origin at crop corner, size reference = shapes / image frame / full image). Details: `docs/README.md`.
+**Merge touching cuts** (union with undo) · **Re-scan area** (local re-trace of a missed spot) · **Assess whole crop** (local settings for a crop) · **Table size & material moves** (passes, park marker, registration marks, overlay). See `docs/README.md`.
 These are not in the Python/Flask edition.
 
 ## Run

@@ -174,3 +174,14 @@ button.tabbtn.on{background:var(--tab);color:#fff;border-color:var(--tab)}
 
 .note.err{color:var(--err)}
 #sizeRef{max-width:100%}
+
+/* merge / re-scan / table overlays */
+.rsarea{fill:var(--area-fill);stroke:var(--area-stroke);stroke-width:2;vector-effect:non-scaling-stroke;stroke-dasharray:4 3;pointer-events:none}
+.rspoly{fill:none;stroke:var(--area-stroke);stroke-width:3;vector-effect:non-scaling-stroke;pointer-events:none}
+.rspoly.dup{stroke:var(--faint);stroke-dasharray:3 3;stroke-width:2}
+.tblreg{fill:var(--tab);fill-opacity:.07;pointer-events:none}.tblreg.p1{fill-opacity:.15}
+.tblwin{fill:none;stroke:var(--tab);stroke-width:2;stroke-dasharray:8 5;vector-effect:non-scaling-stroke;pointer-events:none}
+.tblbrk{stroke:var(--tab);stroke-width:4;vector-effect:non-scaling-stroke;pointer-events:none}
+.tbllbl{fill:var(--tab);font-weight:700;font-family:sans-serif;pointer-events:none;paint-order:stroke;stroke:var(--lbl-halo);stroke-width:4px;stroke-linejoin:round}
+.tblpark{fill:var(--accent);stroke:#fff;stroke-width:1.5;vector-effect:non-scaling-stroke;pointer-events:none}
+#s-table select,#s-merge select{max-width:100%}
