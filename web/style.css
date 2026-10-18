@@ -171,3 +171,6 @@ button.tabbtn.on{background:var(--tab);color:#fff;border-color:var(--tab)}
   .zone-item{padding:6px 10px}
   h3{font-size:14px}
 }
+
+.note.err{color:var(--err)}
+#sizeRef{max-width:100%}

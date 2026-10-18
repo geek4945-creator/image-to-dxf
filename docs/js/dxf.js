@@ -92,6 +92,30 @@
     return out.join("\r\n") + "\r\n";
   }
 
+  /** DXF check: parse a DXF text back (LWPOLYLINE vertices + $INSUNITS) and measure its real extents, independent of the writer. */
+  function measureDxf(text) {
+    const L = String(text).split(/\r?\n/); let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity, n = 0, units = null, sec = "", inPoly = false, lastX = null, hdr = null;
+    for (let i = 0; i + 1 < L.length; i += 2) {
+      const c = L[i].trim(), v = L[i + 1].trim();
+      if (c === "0" && v === "SECTION") { sec = ""; continue; }
+      if (c === "2" && sec === "" ) { sec = v; continue; }
+      if (sec === "HEADER") { if (c === "9") hdr = v; else if (hdr === "$INSUNITS" && c === "70") units = +v; continue; }
+      if (sec !== "ENTITIES") continue;
+      if (c === "0") { inPoly = v === "LWPOLYLINE"; if (inPoly) n++; lastX = null; continue; }
+      if (!inPoly) continue;
+      if (c === "10") lastX = parseFloat(v);
+      else if (c === "20" && lastX !== null) { const y = parseFloat(v); if (lastX < x0) x0 = lastX; if (lastX > x1) x1 = lastX; if (y < y0) y0 = y; if (y > y1) y1 = y; lastX = null; }
+    }
+    if (!isFinite(x0)) return { polylines: n, insunits: units, unit: units === 1 ? "in" : units === 4 ? "mm" : null, minX: 0, minY: 0, maxX: 0, maxY: 0, width: 0, height: 0 };
+    return { polylines: n, insunits: units, unit: units === 1 ? "in" : units === 4 ? "mm" : null, minX: x0, minY: y0, maxX: x1, maxY: y1, width: x1 - x0, height: y1 - y0 };
+  }
+  /** Bounding box [x0,y0,x1,y1] of plan entities (output units). */
+  function entitiesBox(ents) {
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    ents.forEach(e => e.pts.forEach(([x, y]) => { if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; }));
+    return isFinite(x0) ? [x0, y0, x1, y1] : null;
+  }
+
   // ------------------------------------------------------------------ selection / clip / split
   const bboxOf = q => { let a = Infinity, b = Infinity, c = -Infinity, d = -Infinity; for (const [x, y] of q) { if (x < a) a = x; if (x > c) c = x; if (y < b) b = y; if (y > d) d = y; } return [a, b, c, d]; };
   const ringArea = r => { let s = 0; for (let i = 0; i < r.length - 1; i++) s += r[i][0] * r[i + 1][1] - r[i + 1][0] * r[i][1]; return Math.abs(s) / 2; };
@@ -335,13 +359,18 @@
     const plan = buildPlan(polys, o); let ents = plan.entities;
     const enc = new TextEncoder(), paths = ents.length;
     if (o.split === "files") {
-      const files = plan.layers.map(l => { let es = ents.filter(e => e.layer === l); if (o.zeroOrigin) es = shiftToOrigin(es); return { name: l + ".dxf", data: enc.encode(writeEntities(es, o.unit)) }; });
-      return { bytes: await makeZip(files), mime: "application/zip", filename: "cut_files.zip", paths, groups: plan.layers.length, plan };
+      const texts = [];
+      const files = plan.layers.map(l => { let es = ents.filter(e => e.layer === l); if (o.zeroOrigin) es = shiftToOrigin(es); const t = writeEntities(es, o.unit); texts.push(t); return { name: l + ".dxf", data: enc.encode(t) }; });
+      const ms = texts.map(measureDxf), u = o.zeroOrigin ? null : { x0: Math.min(...ms.map(m => m.minX)), y0: Math.min(...ms.map(m => m.minY)), x1: Math.max(...ms.map(m => m.maxX)), y1: Math.max(...ms.map(m => m.maxY)) };
+      const check = { polylines: ms.reduce((a, m) => a + m.polylines, 0), insunits: ms[0] ? ms[0].insunits : null, unit: ms[0] ? ms[0].unit : null, files: ms.length,
+        width: u ? u.x1 - u.x0 : Math.max(...ms.map(m => m.width)), height: u ? u.y1 - u.y0 : Math.max(...ms.map(m => m.height)), perFile: ms.map((m, i) => ({ name: files[i].name, width: m.width, height: m.height })) };
+      return { bytes: await makeZip(files), mime: "application/zip", filename: "cut_files.zip", paths, groups: plan.layers.length, plan, check };
     }
     if (o.zeroOrigin) ents = shiftToOrigin(ents);
-    return { bytes: enc.encode(writeEntities(ents, o.unit)), mime: "application/dxf", filename: "cut.dxf", paths, groups: plan.layers.length, plan };
+    const text = writeEntities(ents, o.unit);
+    return { bytes: enc.encode(text), mime: "application/dxf", filename: "cut.dxf", paths, groups: plan.layers.length, plan, check: measureDxf(text) };
   }
 
-  const api = { writeDxf, writeEntities, buildPlan, buildGroups, exportDxf, makeZip, crc32, nestingDepths, ringTabs, orderUnits };
+  const api = { measureDxf, entitiesBox, bboxOf, writeDxf, writeEntities, buildPlan, buildGroups, exportDxf, makeZip, crc32, nestingDepths, ringTabs, orderUnits };
   if (typeof module !== "undefined" && module.exports) module.exports = api; else root.I2D_DXF = api;
 })(typeof self !== "undefined" ? self : this);

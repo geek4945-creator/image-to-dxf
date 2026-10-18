@@ -38,6 +38,7 @@ def main():
         b = pw.chromium.launch(executable_path=CHROME, headless=True,
                                args=["--use-fake-ui-for-media-stream", "--use-fake-device-for-media-stream"])
         ctx = b.new_context(accept_downloads=True, permissions=["camera"])
+        ctx.add_init_script("try{localStorage.setItem('i2d.unit','mm')}catch(e){}")   # these legacy checks start in mm (the app default is inches: see test_web_size.py)
         page = ctx.new_page()
         errors = []
         page.on("pageerror", lambda e: errors.append(str(e)))
@@ -64,6 +65,9 @@ def main():
         ok_pre = (ORIGIN, "blob:", "data:") if ORIGIN != "file:" else ("file:", "blob:", "data:")
         check("no network requests besides the app's own origin", all(u.startswith(ok_pre) for u in reqs), [u for u in reqs if not u.startswith(ok_pre)])
 
+        # legacy geometry checks below were written for frame-based sizing (width = whole image); size-by-shapes is covered in tests/test_web_size.py
+        page.select_option("#sizeRef", "image"); page.wait_for_timeout(300)
+        page.fill("#width", "100"); page.dispatch_event("#width", "input"); page.wait_for_timeout(500)
         # --- full export, DXF re-opens in ezdxf
         p = download()
         doc = read_dxf(p)

@@ -3,7 +3,7 @@ const $ = id => document.getElementById(id);
 const S = {id:null, gray:null, W:0, H:0, fullGray:null, fullW:0, fullH:0, crop:null, cropSel:null, imgURL:null, fullURL:null, cropURL:null, maskURL:null,
            paths:[], items:[], selected:new Set(), cells:new Set(), areas:[], zones:[], zoneN:0, zsel:null, tabbed:new Set(), mask:null, plan:null,
            tool:'contour', hl:null, drag:null, edit:null, seq:0, areaN:0, loadTok:0};
-window.__i2d = {S};   // read-only debug/test hook
+window.__i2d = {S, dxfExtents:()=>dxfExtents(), exportBox:()=>exportBox()};   // read-only debug/test hook
 const NUM = ['threshold','blur','speckle','tolerance','min_feature'];
 const BOOL = ['auto','invert','holes','drop_frame'];
 
@@ -108,7 +108,7 @@ function clearImage(){
   $('gridOn').checked=false; document.querySelector('input[name=tool][value=contour]').checked=true;
   ['fileIn','phoneIn'].forEach(k=>{ $(k).value=''; });
   $('svg').innerHTML=''; $('svg').style.display='none'; $('empty').style.display='';
-  lastFile=null; $('share').hidden=true; $('info').textContent=''; window.__lastExport=null;
+  lastFile=null; $('share').hidden=true; $('info').textContent=''; $('dxfCheck').textContent=''; window.__lastExport=null;
   syncSize(); renderAll(); setStatus('Image cleared. Load an image to begin');
 }
 $('clearImg').onclick=clearImage;
@@ -119,16 +119,23 @@ function schedule(){ clearTimeout(timer); timer=setTimeout(()=>retrace(false),15
 async function retrace(first){
   if(!S.gray) return; const seq=++S.seq; setStatus('Tracing…');
   await new Promise(r=>setTimeout(r,0)); if(seq!==S.seq) return;
-  const p=params(); if(!(p.scale>0&&p.scaleY>0)) return setStatus('Enter a positive output size',true);
+  if(!(params().scale>0&&params().scaleY>0)) return setStatus('Enter a positive output size',true);
   try{
-    const t0=performance.now(); const r=T.trace(S.gray,S.W,S.H,p);
-    if(seq!==S.seq) return;
-    const changed = r.polys.length!==S.paths.length;
-    S.paths=r.polys; S.items=r.items; S.mask=r.mask; S.maskURL=null; S.info=r.info;
-    if(first||changed){ S.selected=new Set(S.paths.map((_,i)=>i)); S.tabbed=new Set(); }   // ids are positional: reset when the set changes
-    else { S.selected=new Set([...S.selected].filter(i=>i<S.paths.length)); S.tabbed=new Set([...S.tabbed].filter(i=>i<S.paths.length)); }
-    $('info').textContent=`${r.info.paths} contours · ${r.info.vertices} vertices · ${r.info.width}×${r.info.height} ${r.info.unit} · ${r.info.dropped} dropped`;
+    const t0=performance.now(); let r;
+    // Tolerance / min-feature are in output units, and the output scale depends on the traced shapes' box, so settle it (max 3 passes).
+    for(let pass=0;;pass++){
+      const p=params(); r=T.trace(S.gray,S.W,S.H,p);
+      if(seq!==S.seq) return;
+      const changed = r.polys.length!==S.paths.length;
+      S.paths=r.polys; S.items=r.items; S.mask=r.mask; S.maskURL=null; S.info=r.info;
+      if(first||changed){ S.selected=new Set(S.paths.map((_,i)=>i)); S.tabbed=new Set(); }   // ids are positional: reset when the set changes
+      else { S.selected=new Set([...S.selected].filter(i=>i<S.paths.length)); S.tabbed=new Set([...S.tabbed].filter(i=>i<S.paths.length)); }
+      const sc=computeScale();
+      if(pass>=2||!sc.ok||(Math.abs(sc.sx/p.scale-1)<0.02&&Math.abs(sc.sy/p.scaleY-1)<0.02)) break;
+    }
     setStatus(`Traced in ${Math.round(performance.now()-t0)} ms`); renderAll();
+    const e=dxfExtents(), u=$('unit').value;
+    $('info').textContent=`${r.info.paths} contours · ${r.info.vertices} vertices`+(e?` · DXF ${fmt(e.w,5)}×${fmt(e.h,5)} ${u}`:'')+` · ${r.info.dropped} dropped`;
   }catch(e){ setStatus(e.message,true); }
 }
 function maskURL(){
@@ -139,9 +146,37 @@ function maskURL(){
 }
 
 // ---------- output size (units, width/height/scale/PPI, lock aspect)
+// The size you enter is measured on a REFERENCE box, chosen with "Width / height refer to":
+//   shapes (default) = bounding box of the shapes that will really be in the DXF  -> DXF extents == the entered size
+//   image            = the whole image frame (incl. blank margins)  -> DXF shapes are smaller than the entered size
+//   full             = the full original image while a crop is active (scale preserved)
 const PX_PER_UNIT_100=()=>$('unit').value==='in'?96:96/25.4;      // 100 % = 96 px per inch
 const UNIT_PER_INCH=()=>$('unit').value==='in'?1:25.4;
-function refDims(){ const full=S.crop&&$('sizeRef').value==='full'; return full?[S.fullW,S.fullH]:[S.W||800,S.H||600]; }
+const bbCache=new WeakMap();
+function pathBoxes(){
+  let b=bbCache.get(S.paths); if(b) return b;
+  b=S.paths.map(q=>{ let x0=Infinity,y0=Infinity,x1=-Infinity,y1=-Infinity; for(const [x,y] of q){ if(x<x0)x0=x; if(x>x1)x1=x; if(y<y0)y0=y; if(y>y1)y1=y; } return [x0,y0,x1,y1]; });
+  bbCache.set(S.paths,b); return b;
+}
+let boxKey=null, boxVal=null;
+function exportBox(){                // px extents {w,h} of everything that will be written to the DXF (scale independent), or null
+  if(!S.paths.length) return null;
+  const ids=effectiveSelected(); if(!ids.length) return null;
+  const regs=$('limitArea').checked?regions():[], clip=$('clip').checked;
+  const key=[S.id,S.W,S.H,S.paths.length,ids.join(),clip,JSON.stringify(regs.map(r=>r.rect))].join('|');
+  if(boxKey&&boxKey.k===key&&boxKey.p===S.paths) return boxVal;
+  let x0=Infinity,y0=Infinity,x1=-Infinity,y1=-Infinity;
+  if(!regs.length){ const bb=pathBoxes(); ids.forEach(i=>{ const q=bb[i]; if(q[0]<x0)x0=q[0]; if(q[2]>x1)x1=q[2]; if(q[1]<y0)y0=q[1]; if(q[3]>y1)y1=q[3]; }); }
+  else { try{ const pl=D.buildPlan(S.paths,{pxW:S.W,pxH:S.H,scale:1,scaleY:1,selected:ids,regions:regs,clip,split:'none'}); const q=D.entitiesBox(pl.entities); if(q){x0=q[0];y0=q[1];x1=q[2];y1=q[3];} }catch(e){} }
+  boxVal=isFinite(x0)&&x1>x0&&y1>y0?{w:x1-x0,h:y1-y0}:null; boxKey={k:key,p:S.paths}; return boxVal;
+}
+function refName(){ const r=$('sizeRef').value; return r==='full'&&!S.crop?'image':r; }
+function refDims(){
+  const r=refName();
+  if(r==='shapes'){ const b=exportBox(); if(b) return [b.w,b.h]; }
+  if(r==='full') return [S.fullW,S.fullH];
+  return [S.W||800,S.H||600];
+}
 function computeScale(){          // output units per image pixel (x and y)
   const mode=$('sizeBy').value, lock=$('lock').checked, [rw,rh]=refDims();
   const W=parseFloat($('width').value), Hh=parseFloat($('height').value), pct=parseFloat($('pct').value), dpi=parseFloat($('dpi').value);
@@ -152,19 +187,40 @@ function computeScale(){          // output units per image pixel (x and y)
   else sx=sy=UNIT_PER_INCH()/dpi;
   return {sx,sy,ok:sx>0&&sy>0&&isFinite(sx)&&isFinite(sy)};
 }
+function primaryFields(){         // fields the user is typing in for the current mode: never overwritten by the sync
+  const mode=$('sizeBy').value, lock=$('lock').checked;
+  return mode==='width'?(lock?['width']:['width','height']):mode==='height'?(lock?['height']:['width','height']):mode==='percent'?['pct']:['dpi'];
+}
+function writeFields(sc,keep){    // derive every field from a scale pair (output units per px)
+  const [rw,rh]=refDims(), vals={width:rw*sc.sx,height:rh*sc.sy,pct:sc.sx*PX_PER_UNIT_100()*100,dpi:UNIT_PER_INCH()/sc.sx};
+  Object.keys(vals).forEach(k=>{ if(!keep.includes(k)){ $(k).value=fmt(vals[k],7); $(k).dataset.last=$(k).value; } });
+}
+let lastSc=null;
+// Real extents the DXF will have (output units): measured on the planned entities when tabs/order are active, else shapes box x scale.
+function dxfExtents(sc){
+  sc=sc||computeScale(); if(!sc.ok||!S.gray) return null;
+  if(S.plan){ const q=D.entitiesBox(S.plan.entities); if(q) return {w:q[2]-q[0],h:q[3]-q[1],fromPlan:true}; }
+  const b=exportBox(); return b?{w:b.w*sc.sx,h:b.h*sc.sy}:null;
+}
+const inch=(v,u)=>u==='in'?v:v/25.4, mmv=(v,u)=>u==='in'?v*25.4:v;
+function renderSizeOut(sc){
+  sc=sc||computeScale(); const o=$('sizeOut'), u=$('unit').value;
+  if(!S.gray){ o.textContent='Output size: load an image to see it'; return; }
+  if(!sc.ok){ o.textContent='Output size: enter a positive value'; return; }
+  const e=dxfExtents(sc), fw=S.W*sc.sx, fh=S.H*sc.sy;
+  const f=(w,h)=>`${inch(w,u).toFixed(3)} × ${inch(h,u).toFixed(3)} in (${mmv(w,u).toFixed(2)} × ${mmv(h,u).toFixed(2)} mm)`;
+  if(!e){ o.textContent=`Output size: nothing selected. Image frame would be ${f(fw,fh)}`; return; }
+  o.textContent=`DXF will measure ${f(e.w,e.h)}`+(S.crop?' – cropped area':'')+` · shapes only; the whole image frame at this scale is ${f(fw,fh)}`
+    +(refName()==='shapes'?'':' · ⚠ the size you entered applies to the image frame, so the shapes are smaller (switch "refer to" to the traced shapes to size the cut itself)');
+  o.dataset.w=e.w; o.dataset.h=e.h; o.dataset.fw=fw; o.dataset.fh=fh; o.dataset.u=u;
+}
 function syncSize(except){        // refresh derived fields, editability and the live readout
-  const mode=$('sizeBy').value, lock=$('lock').checked, sc=computeScale();
-  $('rowPct').hidden=mode!=='percent'; $('rowDpi').hidden=mode!=='dpi'; $('rowRef').hidden=!S.crop;
-  $('width').readOnly=!(mode==='width'||(mode==='height'&&!lock)); $('height').readOnly=!(mode==='height'||(mode==='width'&&!lock));
-  if(sc.ok){
-    const [rw,rh]=refDims(), vals={width:rw*sc.sx,height:rh*sc.sy,pct:sc.sx*PX_PER_UNIT_100()*100,dpi:UNIT_PER_INCH()/sc.sx};
-    Object.keys(vals).forEach(k=>{ if(k!==except) $(k).value=fmt(vals[k]); });
-  }
-  const o=$('sizeOut');
-  if(!S.gray) o.textContent='Output size: load an image to see it';
-  else if(!sc.ok) o.textContent='Output size: enter a positive value';
-  else{ const w=S.W*sc.sx, h=S.H*sc.sy, u=$('unit').value, inch=u==='in'?[w,h]:[w/25.4,h/25.4], mm=u==='in'?[w*25.4,h*25.4]:[w,h];
-    o.textContent=`Output size: ${inch[0].toFixed(3)} × ${inch[1].toFixed(3)} in  (${mm[0].toFixed(2)} × ${mm[1].toFixed(2)} mm)`+(S.crop?' – cropped area':''); o.dataset.w=w; o.dataset.h=h; }
+  const mode=$('sizeBy').value, sc=computeScale(), fullOK=!!S.crop, fo=$('sizeRef').querySelector('option[value=full]');
+  $('rowPct').hidden=mode!=='percent'; $('rowDpi').hidden=mode!=='dpi';
+  fo.hidden=fo.disabled=!fullOK; if(!fullOK&&$('sizeRef').value==='full') $('sizeRef').value='shapes';
+  ['width','height','pct','dpi'].forEach(k=>$(k).readOnly=false);
+  if(sc.ok){ writeFields(sc,primaryFields().concat(except||[])); lastSc=sc; }
+  renderSizeOut(sc);
 }
 let curUnit='mm';
 function convertUnits(){            // keep sizes physically the same when switching mm <-> in
@@ -172,17 +228,28 @@ function convertUnits(){            // keep sizes physically the same when switc
   [['width',0],['height',0],['tolerance',1],['min_feature',1],['cell',0],['tabW',0],['tabS',0]].forEach(([k,slider])=>{
     const el=$(k), v=parseFloat(el.value)*f;
     if(slider){ const cfg={tolerance:{mm:[5,0.05],in:[0.2,0.001]},min_feature:{mm:[50,0.5],in:[2,0.01]}}[k][u]; el.max=cfg[0]; el.step=cfg[1]; el.value=Math.min(cfg[0],v); const o=$('o_'+k); if(o) o.textContent=el.value; }
-    else el.value=fmt(v,4);
+    else{ el.value=fmt(v,7); el.dataset.last=el.value; }
   });
   curUnit=u; document.querySelectorAll('.u').forEach(x=>x.textContent=u);
 }
 NUM.concat(BOOL).forEach(k=>{ const el=$(k); el.addEventListener('input',()=>{ const o=$('o_'+k); if(o) o.textContent=el.value; schedule(); renderGrid(); }); });
+// Every size field applies immediately (input AND change). Typing in a field makes it the driver: no hidden read-only fields.
+const DRIVES={width:'width',height:'height',pct:'percent',dpi:'dpi'};
+function onSizeEdit(k){
+  const lock=$('lock').checked, mode=$('sizeBy').value;
+  if(k==='width'||k==='height'){
+    if(mode==='percent'||mode==='dpi'||(lock&&mode!==DRIVES[k])) $('sizeBy').value=DRIVES[k];
+  } else $('sizeBy').value=DRIVES[k];
+}
 ['unit','sizeBy','lock','sizeRef','width','height','pct','dpi'].forEach(k=>{
-  const el=$(k); el.addEventListener('input',()=>{
+  const el=$(k), num=['width','height','pct','dpi'].includes(k), h=ev=>{
+    // 'change' fires on blur after 'input' already handled the same text (or after a programmatic rewrite): ignore it unless the value really changed
+    if(num){ if(ev&&ev.type==='change'&&el.dataset.last===el.value) return; el.dataset.last=el.value; onSizeEdit(k); }
     if(k==='unit') convertUnits();
-    syncSize(['width','height','pct','dpi'].includes(k)?k:undefined);
-    if(S.crop&&k==='sizeRef') S.cropSel=null;
-    schedule(); renderGrid(); renderNotes(); });
+    if((k==='sizeBy'||k==='sizeRef')&&lastSc&&lastSc.ok){            // keep today's physical scale; just re-express it in the new mode / reference
+      writeFields(lastSc,[]); }
+    recalc(); schedule(); renderGrid(); renderSvg(); renderNotes(); };
+  el.addEventListener('input',h); el.addEventListener('change',h);
 });
 
 // ---------- grid
@@ -247,7 +314,6 @@ function renderCrop(){
   $('cropApply').disabled=!S.cropSel; $('cropReset').disabled=!S.crop;
   $('cropNote').textContent=S.crop?`Cropped to x ${S.crop[0]}–${S.crop[2]}, y ${S.crop[1]}–${S.crop[3]} px of the ${S.fullW}×${S.fullH} px image (${S.W}×${S.H} px traced; DXF origin = crop corner)`
     :(S.cropSel?'Crop area drawn: press "Focus / Crop to area"':'No crop');
-  $('rowRef').hidden=!S.crop;
 }
 $('cropDraw').onclick=()=>{ if(!S.gray) return setStatus('Load an image first',true); setTool('crop'); setStatus('Drag a rectangle on the image, then press Focus / Crop to area'); };
 async function cropTo(rectInView){
@@ -296,7 +362,8 @@ function updatePlan(){
   else if($('ioLayers').checked&&o.split==='none') $('orderNote').textContent='';
   if(o.tabs) $('tabNote').textContent=`${st.tabbed} contour(s) get ${st.tabs} tab(s) of ${$('tabW').value} ${$('unit').value}`+(st.tabSkipped?` · ${st.tabSkipped} too small for tabs (left closed)`:'')+'.';
 }
-function refresh(){ updatePlan(); renderSvg(); renderList(); renderNotes(); }
+function recalc(){ $('dxfCheck').textContent=''; syncSize(); updatePlan(); renderSizeOut(); }       // scale -> plan -> readout, in that order
+function refresh(){ recalc(); renderSvg(); renderList(); renderNotes(); }
 ['insideFirst','nearest','ioLayers','showOrder','tabsAll','tabsSkipHoles','tabW','tabN','tabS','tabMode','split','groupBy','zero'].forEach(k=>{
   $(k).addEventListener('input',()=>{ if(k==='tabMode') $('tabSpacingWrap').hidden=$('tabMode').value!=='spacing'; refresh(); }); });
 $('tabsSel').onclick=()=>{ S.selected.forEach(i=>S.tabbed.add(i)); refresh(); };
@@ -304,7 +371,7 @@ $('tabsClear').onclick=()=>{ S.tabbed=new Set(); $('tabsAll').checked=false; ref
 
 // ---------- rendering
 const NS='http://www.w3.org/2000/svg';
-function renderAll(){ updatePlan(); renderSvg(); renderList(); renderNotes(); renderZones(); renderCrop(); }
+function renderAll(){ recalc(); renderSvg(); renderList(); renderNotes(); renderZones(); renderCrop(); }
 function renderGrid(){ if(S.gray) renderSvg(); }
 const HANDLES={nw:[0,0],n:[.5,0],ne:[1,0],e:[1,.5],se:[1,1],s:[.5,1],sw:[0,1],w:[0,.5]};
 function rectSvg(kind,id,rect,cls,label){
@@ -461,6 +528,18 @@ async function saveFile(f){
     return 'download';
   }catch(e){ if(await shareFile(f)) return 'share'; throw e; }
 }
+// DXF check: the numbers below come from re-reading the generated file, not from the on-screen settings.
+function showCheck(r,o){
+  const c=r.check, u=o.unit, uname=c.unit==='in'?'inches':c.unit==='mm'?'mm':'?', el=$('dxfCheck'), f=v=>(+v.toFixed(4)).toString();
+  const b=exportBox(), sc=computeScale(), req=b?{w:b.w*sc.sx,h:b.h*sc.sy}:null, shapes=refName()==='shapes';
+  const tol=Math.max(0.005*Math.max(req?req.w:0,req?req.h:0),1e-4)+(o.tabs?o.tabs.width:0);
+  const okUnit=c.unit===u, okSize=!req||(Math.abs(c.width-req.w)<=tol&&Math.abs(c.height-req.h)<=tol);
+  let t=`DXF check (re-read from the file): ${f(c.width)} × ${f(c.height)} ${u} · units ${uname}${okUnit?'':' ⚠ unexpected'} · ${c.polylines} polylines`+(o.zeroOrigin&&o.split==='files'?' (largest file)':'');
+  if(shapes) t+=okSize&&okUnit?` · ✓ matches the size you set (${f(req.w)} × ${f(req.h)} ${u})`:` · ⚠ expected ${req?f(req.w)+' × '+f(req.h):'?'} ${u}`;
+  else t+=' · size was set on the image/frame, so the shapes are smaller than the entered width/height (expected)';
+  el.textContent=t; el.className='note strong'+((shapes&&!(okSize&&okUnit))?' err':'');
+  return {width:c.width,height:c.height,unit:c.unit,polylines:c.polylines,ok:okUnit&&okSize,requested:req};
+}
 $('share').onclick=async()=>{ if(!lastFile) return; const ok=await shareFile(lastFile); setStatus(ok?`Shared ${lastFile.filename}`:'Sharing is not available here: use Download DXF',!ok); };
 $('download').onclick=async()=>{
   try{
@@ -473,7 +552,24 @@ $('download').onclick=async()=>{
     const how=await saveFile(lastFile);
     setStatus(`${how==='share'?'Shared':'Downloaded'} ${r.filename} (${r.paths} paths, ${r.groups} group(s))`);
     if(canShareFiles()) $('share').hidden=false;
-    window.__lastExport={filename:r.filename,paths:r.paths,groups:r.groups,stats:r.plan.stats,unit:o.unit};
+    const chk=showCheck(r,o);
+    window.__lastExport={filename:r.filename,paths:r.paths,groups:r.groups,stats:r.plan.stats,unit:o.unit,check:chk};
   }catch(e){ setStatus(e.message,true); }
 };
+// ---------- unit default + persistence: inches by default, the choice is remembered on this device
+const UNIT_KEY='i2d.unit';
+function savedUnit(){ try{ const u=localStorage.getItem(UNIT_KEY); return u==='mm'||u==='in'?u:'in'; }catch(e){ return 'in'; } }
+function initUnit(){
+  const u=savedUnit();                         // the HTML defaults are written in mm; convert them once if we start in inches
+  $('unit').value=u;
+  if(u==='in'){
+    convertUnits();
+    Object.entries({width:10,height:7.5,cell:1,tabW:0.05,tabS:2}).forEach(([k,v])=>{ $(k).value=v; $(k).dataset.last=String(v); });   // tidy inch defaults (10 in wide)
+    [['tolerance',0.01],['min_feature',0.04]].forEach(([k,v])=>{ $(k).value=v; $('o_'+k).textContent=v; });
+  }
+  document.querySelectorAll('.u').forEach(x=>x.textContent=u);
+  $('unit').addEventListener('change',()=>{ try{ localStorage.setItem(UNIT_KEY,$('unit').value); }catch(e){} });
+  $('unit').addEventListener('input',()=>{ try{ localStorage.setItem(UNIT_KEY,$('unit').value); }catch(e){} });
+}
+initUnit();
 syncSize(); renderAll();

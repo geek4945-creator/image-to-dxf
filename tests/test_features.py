@@ -103,6 +103,7 @@ class Ctx:
         else:
             opts.update(viewport={"width": 1400, "height": 900})
         self.ctx = browser.new_context(**opts)
+        self.ctx.add_init_script("try{localStorage.setItem('i2d.unit','mm')}catch(e){}")   # legacy checks start in mm (default is inches: tests/test_web_size.py)
         self.page = self.ctx.new_page()
         self.errors = []
         self.page.on("pageerror", lambda e: self.errors.append(str(e)))
@@ -119,6 +120,8 @@ class Ctx:
         p.goto(URL)
         p.set_input_files("#fileIn", img)
         p.wait_for_function("document.querySelectorAll('#list li[data-id]').length>0", timeout=15000)
+        # legacy feature checks assume frame-based sizing (100 mm = whole image width); shape-based sizing is tested in test_web_size.py
+        p.select_option("#sizeRef", "image"); p.fill("#width", "100"); p.wait_for_timeout(500)
 
     def st(self, js):
         return self.page.evaluate(f"(()=>{{const S=__i2d.S;return {js}}})()")
@@ -417,22 +420,24 @@ def t_crop(c):
     c.ok("only the shape inside the crop is traced (1 contour)", p.locator("#list li[data-id]").count() == 1 and not p.is_disabled("#cropReset"), p.locator("#list li[data-id]").count())
     c.ok("crop resets zones/areas/cells; preview shows the cropped image", c.st("S.zones.length+S.areas.length+S.cells.size") == 0)
     c.shot("8-crop-focused")
-    c.ok("size choice visible after crop (default: scale preserved / full image)", p.is_visible("#rowRef") and p.input_value("#sizeRef") == "full")
+    c.ok("'full original image' reference becomes available after crop", p.is_visible("#rowRef") and not p.eval_on_selector("#sizeRef option[value=full]", "o=>o.disabled"))
+    p.select_option("#sizeRef", "full"); c.num("#width", 100)
     # scale preserved: width 100 mm refers to the 800 px image -> 0.125 mm/px
     es = c.export(); x0, x1, y0, y1 = extents(es)
     ex = ((60 - cr[0]) * SCALE_MM, (301 - cr[0]) * SCALE_MM, (H - (561 - cr[1])) * SCALE_MM, (H - (360 - cr[1])) * SCALE_MM)
     c.ok("DXF: origin at crop corner, scale preserved (rect 30 x 25 mm at crop offset)", all(abs(a - b) < 1e-3 for a, b in zip((x0, x1, y0, y1), ex)), ((x0, x1, y0, y1), ex))
-    c.ok("output size readout is the crop (not the full image)", abs(float(p.get_attribute("#sizeOut", "data-w")) - W * SCALE_MM) < 1e-3, p.inner_text("#sizeOut"))
+    c.ok("output size readout is the crop (not the full image)", abs(float(p.get_attribute("#sizeOut", "data-fw")) - W * SCALE_MM) < 1e-3, p.inner_text("#sizeOut"))
     # width refers to the crop
-    p.select_option("#sizeRef", "crop"); c.num("#width", 100); c.settle(300)
+    p.select_option("#sizeRef", "image"); c.num("#width", 100); c.settle(300)
     es = c.export(); x0, x1, y0, y1 = extents(es); k = 100 / W
-    c.ok("width setting refers to the crop: crop is 100 mm wide", abs(float(p.get_attribute("#sizeOut", "data-w")) - 100) < 1e-3 and abs(x1 - (301 - cr[0]) * k) < 1e-3 and abs(x0 - (60 - cr[0]) * k) < 1e-3, (x0, x1))
+    c.ok("width setting refers to the crop: crop is 100 mm wide", abs(float(p.get_attribute("#sizeOut", "data-fw")) - 100) < 1e-3 and abs(x1 - (301 - cr[0]) * k) < 1e-3 and abs(x0 - (60 - cr[0]) * k) < 1e-3, (x0, x1))
     p.select_option("#sizeRef", "full"); c.num("#width", 100)
     # crop again (nested) inside the focused view, then reset
     p.click("#cropDraw"); c.drag_img((20, 20), (W * 0.6, H * 0.6)); p.click("#cropApply"); p.wait_for_function("document.getElementById('status').textContent.startsWith('Traced')")
     cr2 = c.st("S.crop"); c.ok("second crop narrows further (full-image coordinates kept)", cr2[0] >= cr[0] and cr2[2] < cr[2] and cr2[1] >= cr[1], (cr, cr2))
     p.click("#cropReset"); p.wait_for_function("document.getElementById('status').textContent.startsWith('Traced')")
-    c.ok("Reset crop restores the full image and its 13 contours", c.st("S.crop") is None and c.st("S.W") == 800 and p.locator("#list li[data-id]").count() == 13 and p.is_disabled("#cropReset") and not p.is_visible("#rowRef"))
+    c.ok("Reset crop restores the full image and its 13 contours", c.st("S.crop") is None and c.st("S.W") == 800 and p.locator("#list li[data-id]").count() == 13 and p.is_disabled("#cropReset") and p.eval_on_selector("#sizeRef option[value=full]", "o=>o.disabled"))
+    p.select_option("#sizeRef", "image"); c.num("#width", 100)
     es = c.export(); x0, x1, y0, y1 = extents(es)
     c.ok("after reset the DXF origin is the image corner again", abs(x0 - 40 * SCALE_MM) < 1e-3 and abs(x1 - 761 * SCALE_MM) < 1e-3)
 
@@ -447,7 +452,7 @@ def t_inches(c):
     c.ok("units selector converts 100 mm to 3.937 in", abs(float(p.input_value("#width")) - 3.937) < 0.002, p.input_value("#width"))
     c.num("#width", 8)
     c.ok("live readout 8.000 × 6.000 in (203.20 × 152.40 mm)", "8.000 × 6.000 in" in p.inner_text("#sizeOut") and "203.20 × 152.40 mm" in p.inner_text("#sizeOut"), p.inner_text("#sizeOut"))
-    c.ok("height field follows (lock aspect)", abs(float(p.input_value("#height")) - 6) < 1e-6 and p.get_attribute("#height", "readonly") is not None)
+    c.ok("height field follows (lock aspect), editable", abs(float(p.input_value("#height")) - 6) < 1e-6 and p.get_attribute("#height", "readonly") is None)   # no read-only trap: typing in Height takes over
     c.shot("9-size-inches")
     doc = c.export_doc(); es = ents(doc); x0, x1, y0, y1 = extents(es)
     k = 8 / 800
