@@ -75,6 +75,46 @@
     <p class="note">Draw a rectangle with the Crop tool, then <i>Focus</i>: tracing and the DXF use only that part of the picture (DXF origin = crop corner). Crop again to narrow further.</p>
     <div class="row"><button id="cropDraw">Draw crop area</button><button id="cropApply" disabled>Focus / Crop to area</button><button id="cropReset" disabled>Reset crop</button></div>
     <div id="cropNote" class="note">No crop</div>
+    <div id="asRow" hidden>
+      <h3>Assess whole crop</h3>
+      <p class="note">Crop lighting often differs from the rest of the picture. Re-trace the entire cropped section with its own local settings (independent of the Processing sliders). The size reference above keeps working.</p>
+      <div class="row"><button id="asGo">Re-assess entire cropped section</button></div>
+      <label class="row"><input id="asOn" type="checkbox"> Use local crop settings</label>
+      <div id="asBox" hidden>
+        <label class="row"><input id="asAuto" type="checkbox" checked> Local auto (Otsu from the crop pixels only)</label>
+        <label class="row"><input id="asNorm" type="checkbox"> Stretch contrast first (faint / dim crops)</label>
+        <label>Threshold <output id="o_asThr">128</output><input id="asThr" type="range" min="0" max="255" value="128"></label>
+        <label class="row"><input id="asInvert" type="checkbox"> Invert</label>
+        <label>Blur <output id="o_asBlur">0</output><input id="asBlur" type="range" min="0" max="10" value="0"></label>
+        <label>Detail: remove specks &lt; <output id="o_asSpeckle">4</output> px<input id="asSpeckle" type="range" min="0" max="200" value="4"></label>
+        <label>Detail: simplify <output id="o_asSimp">0.5</output> px<input id="asSimp" type="range" min="0" max="5" step="0.1" value="0.5"></label>
+        <label>Detail: min size <output id="o_asMin">3</output> px<input id="asMin" type="range" min="0" max="100" value="3"></label>
+      </div>
+    </div>
+  </section>
+  <section id="s-rescan">
+    <h2>Re-scan area</h2>
+    <p class="note">Missed a cut? Choose the <i>Re-scan</i> tool and drag a rectangle over the spot. That region alone is re-traced from the source pixels with its own settings; the green preview shows what would be found. <i>Add to cuts</i> merges it into the cuts (undo available).</p>
+    <div class="row"><button id="rsDraw">Draw re-scan area</button><button id="rsClear" disabled>Clear area</button></div>
+    <label class="row"><input id="rsAuto" type="checkbox" checked> Local auto (Otsu) threshold</label>
+    <label class="row"><input id="rsNorm" type="checkbox"> Stretch contrast first (faint shapes)</label>
+    <label>Threshold <output id="o_rsThr">128</output><input id="rsThr" type="range" min="0" max="255" value="128"></label>
+    <label class="row"><input id="rsInvert" type="checkbox"> Invert</label>
+    <label>Blur <output id="o_rsBlur">0</output><input id="rsBlur" type="range" min="0" max="10" value="0"></label>
+    <label>Remove specks &lt; <output id="o_rsSpeckle">4</output> px<input id="rsSpeckle" type="range" min="0" max="200" value="4"></label>
+    <label>Simplify <output id="o_rsSimp">0.5</output> px<input id="rsSimp" type="range" min="0" max="5" step="0.1" value="0.5"></label>
+    <label>Min size <output id="o_rsMin">3</output> px<input id="rsMin" type="range" min="0" max="100" value="3"></label>
+    <label class="row"><input id="rsReplace" type="checkbox"> Replace existing contours inside the area</label>
+    <div class="row"><button id="rsAdd" class="primary" disabled>Add to cuts</button></div>
+    <div id="rsNote" class="note"></div>
+  </section>
+  <section id="s-merge">
+    <h2>Merge touching cuts</h2>
+    <p class="note">Contours that touch, overlap or lie within the tolerance are unioned into one outline (shared inner edges removed, holes kept).</p>
+    <div class="row">Merge <select id="mergeScope" aria-label="Merge scope"><option value="all">all contours</option><option value="selected">only selected</option></select></div>
+    <div class="row"><label>Touch tolerance <input id="mergeTol" type="number" min="0" step="any" value="0.01" class="n70" inputmode="decimal"> <span class="u">in</span></label></div>
+    <div class="row"><button id="mergeGo" disabled>Merge touching cuts</button></div>
+    <div id="mergeNote" class="note"></div>
   </section>
   <section id="s-grid">
     <h2>4. Grid / area of interest</h2>
@@ -109,6 +149,24 @@
       <span id="tabSpacingWrap" hidden><input id="tabS" type="number" min="0.001" step="any" value="50" class="n70" aria-label="Tab spacing"> <span class="u">mm</span></span></div>
     <div id="tabNote" class="note"></div>
   </section>
+  <section id="s-table">
+    <h2>Table size &amp; material moves</h2>
+    <label class="row"><input id="tblOn" type="checkbox"> Break the job into passes that fit my table</label>
+    <div id="tblBox" hidden>
+      <p class="note">When the job is bigger than the table it is split at the table boundaries. After each pass the torch parks; move the material, then run the next file.</p>
+      <div class="row">Preset <select id="tblPreset" aria-label="Table preset"><option value="24x24">24 × 24 in</option><option value="24x48">24 × 48 in</option><option value="48x48">48 × 48 in</option><option value="48x96">48 × 96 in (4 × 8 ft)</option><option value="60x120">60 × 120 in (5 × 10 ft)</option><option value="custom">Custom</option></select></div>
+      <div class="row"><label>Length (X) <input id="tblW" type="number" min="0.001" step="any" value="48" class="n80" inputmode="decimal"> <span class="u">in</span></label>
+        <label>Height (Y) <input id="tblH" type="number" min="0.001" step="any" value="48" class="n80" inputmode="decimal"> <span class="u">in</span></label></div>
+      <div class="row">Start corner <select id="tblCorner" aria-label="Start corner"><option value="bl">lower-left</option><option value="br">lower-right</option><option value="tl">upper-left</option><option value="tr">upper-right</option></select></div>
+      <div class="row"><label>Overlap / registration margin <input id="tblOv" type="number" min="0" step="any" value="1" class="n70" inputmode="decimal"> <span class="u">in</span></label></div>
+      <div class="row">Cuts across a break <select id="tblMode" aria-label="Cuts across a break"><option value="clip">continue in the next pass (clip at the break)</option><option value="whole">keep whole contours (assign by centre)</option></select></div>
+      <div class="row">Torch park <select id="tblPark" aria-label="Torch park position"><option value="bl">table lower-left</option><option value="br">table lower-right</option><option value="tl">table upper-left</option><option value="tr">table upper-right</option><option value="custom">custom X, Y</option></select></div>
+      <div id="tblParkXY" class="row" hidden><label>X <input id="tblParkX" type="number" step="any" value="0" class="n70" inputmode="decimal"></label> <label>Y <input id="tblParkY" type="number" step="any" value="0" class="n70" inputmode="decimal"></label> <span class="u">in</span></div>
+      <label class="row"><input id="tblMarks" type="checkbox"> Registration marks at the breaks (layers REG_MARK / REG_ALIGN)</label>
+      <div class="row">Output <select id="tblOut" aria-label="Table output"><option value="files">one DXF per pass (zip)</option><option value="single">single DXF, layers SECTION_1…</option></select></div>
+      <div id="tblNote" class="note" aria-live="polite"></div>
+    </div>
+  </section>
   <section id="s-exp">
     <h2>7. Export</h2>
     <label class="row"><input id="limitArea" type="checkbox" checked> Limit to area of interest (if any)</label>
@@ -127,6 +185,7 @@
     <label><input id="showImg" type="checkbox" checked> Image</label>
     <label><input id="showMask" type="checkbox"> Threshold preview</label>
     <label><input id="showVec" type="checkbox" checked> Vectors</label>
+    <button id="undoEdit" disabled title="Undo the last merge / re-scan">Undo</button>
     <button id="clearImg" disabled title="Remove the image and reset contours, selection, grid, zones and crop">Clear image</button>
     <span id="info" class="note"></span>
   </div>
@@ -135,7 +194,8 @@
     <label><input type="radio" name="tool" value="cell"> Grid cells</label>
     <label><input type="radio" name="tool" value="region"> Drag region</label>
     <label><input type="radio" name="tool" value="zone"> Zones</label>
-    <label><input type="radio" name="tool" value="crop"> Crop</label></div>
+    <label><input type="radio" name="tool" value="crop"> Crop</label>
+    <label><input type="radio" name="tool" value="rescan"> Re-scan</label></div>
   <div id="stage"><svg id="svg" xmlns="http://www.w3.org/2000/svg"></svg><div id="empty">No image loaded</div></div>
 </section>
 <aside id="listPanel">
