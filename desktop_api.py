@@ -99,6 +99,11 @@ def classic_file(p):
 def web_file(p):
     if p.startswith("api/"):
         abort(404)
+    if os.path.isdir(os.path.join(WEB, p.rstrip("/"))) and os.path.isfile(os.path.join(WEB, p.rstrip("/"), "index.html")):
+        if not p.endswith("/"):
+            from flask import redirect
+            return redirect("/" + p + "/")
+        p = p + "index.html"                                         # e.g. /v1/ -> Hard Version 1
     if os.path.isfile(os.path.join(WEB, p)):
         return send_from_directory(WEB, p, max_age=0)
     return send_from_directory(os.path.join(HERE, "static"), p, max_age=0)   # older server UI assets

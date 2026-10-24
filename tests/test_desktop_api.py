@@ -13,6 +13,8 @@ def test_ui_routes():
     assert c.get("/classic/").status_code == 200 and c.get("/classic/app.js").status_code == 200
     assert c.get("/api/health").get_json()["ok"]
     assert c.get("/api/nope").status_code in (404, 405)
+    r = c.get("/v1/"); assert r.status_code == 200 and b"<html" in r.data.lower()
+    assert c.get("/v1").status_code in (301, 302, 308)
 
 
 def test_version_and_settings():
