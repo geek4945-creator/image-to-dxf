@@ -12,8 +12,9 @@ from flask import Flask, jsonify, request, send_from_directory, Response
 import pipeline as pl
 import selection
 import urlfetch
+import desktop_api
 
-app = Flask(__name__, static_folder="static", static_url_path="")
+app = Flask(__name__, static_folder=None)   # UI files are served by desktop_api (web/ at /, the older server UI at /classic/)
 app.config["MAX_CONTENT_LENGTH"] = 25 * 1024 * 1024
 
 _store: "OrderedDict[str, np.ndarray]" = OrderedDict()
@@ -54,11 +55,6 @@ def _big(e):
 def _loaded(gray):
     h, w = gray.shape
     return jsonify(id=_put(gray), width=w, height=h)
-
-
-@app.get("/")
-def index():
-    return app.send_static_file("index.html")
 
 
 @app.post("/api/upload")
@@ -125,6 +121,9 @@ def dxf():
 @app.get("/api/health")
 def health():
     return jsonify(ok=True)
+
+
+app.register_blueprint(desktop_api.bp)   # registered last: its /<path> catch-all must not shadow the API routes
 
 
 if __name__ == "__main__":

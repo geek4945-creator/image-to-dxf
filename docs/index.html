@@ -13,12 +13,26 @@
 <link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png">
 <script>(function(){try{var t=localStorage.getItem('i2d-theme');if(t==='light'||t==='dark')document.documentElement.setAttribute('data-theme',t);}catch(e){}})();</script>
 <title>Image → DXF cut file (browser edition)</title>
-<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="style.css?v=1.5.0-b9">
 </head><body>
 <header><h1>Image → DXF</h1><span class="badge" title="Nothing is uploaded: all processing happens in this browser tab.">runs 100% in your browser</span><span id="status" class="status" role="status" aria-live="polite">Load an image to begin</span>
-<div class="theme" id="themeSwitch" role="group" aria-label="Color theme"><button data-theme="light">Light</button><button data-theme="dark">Dark</button><button data-theme="auto" class="on">Auto</button></div></header>
+<div class="theme" id="themeSwitch" role="group" aria-label="Color theme"><button data-theme="light">Light</button><button data-theme="dark">Dark</button><button data-theme="auto" class="on">Auto</button></div>
+<nav id="tabBar" class="tabbar" role="tablist" aria-label="Sections"></nav></header>
+<div id="updBanner" class="updbanner" hidden><span id="updText">Update available</span> <button id="updReload">Reload</button> <button id="updLater">Later</button></div>
 <main>
 <aside id="panel">
+  <section id="s-reset">
+    <details id="verMenu"><summary>Version: <b id="verName">Hard Version 1.5</b> <small id="verBuild"></small></summary>
+      <div class="vermenu">
+        <div class="note" id="verInfo"></div>
+        <div class="row"><a id="toV1" href="v1/" class="btnlink">Switch to Hard Version 1</a></div>
+        <div class="row"><button id="updCheck" type="button">Check for updates</button> <small id="updNote"></small></div>
+        <label class="row"><input id="autoUpd" type="checkbox" data-keep> Auto-update (reload when a new build is published and no image is open)</label>
+        <div id="winUpd" hidden><label class="row"><input id="winAutoUpd" type="checkbox" data-keep> Windows app: install updates automatically at start-up</label>
+          <div class="row"><button id="winUpdGo" type="button">Download &amp; install update</button></div><div id="winUpdNote" class="note"></div></div>
+      </div></details>
+    <div class="row"><button id="resetDefaults" type="button" title="Restore every setting to its default (keeps the image)">Reset settings to default</button></div>
+  </section>
   <section id="s-src">
     <h2>1. Source</h2>
     <div class="tabs" id="srcTabs">
@@ -174,10 +188,92 @@
     <div class="row">Split: <select id="split"><option value="none">One file, one CUT layer</option><option value="layers">One file, layer per group</option><option value="files">Separate files (zip)</option></select></div>
     <div class="row">Group by: <select id="groupBy"><option value="contour">contour</option><option value="cell">area / cell</option></select>
       <label class="row"><input id="zero" type="checkbox"> origin to 0,0 per file</label></div>
+    <div class="row">DXF format <select id="dxfFmt" aria-label="DXF format"><option value="r2000" selected>Current: R2000, LWPOLYLINE</option><option value="torchmate">TorchMate-friendly (R12, closed POLYLINE, inches, one CUT layer)</option><option value="r12">R12 compatible (AC1009, POLYLINE)</option></select></div>
     <button id="download" class="primary" disabled>Download DXF</button>
     <button id="share" class="primary alt" hidden>Share / Save to Files…</button>
     <div id="exportNote" class="note"></div>
     <div id="dxfCheck" class="note strong" aria-live="polite"></div>
+  </section>
+  <section id="s-edit">
+    <h2>Edit contours</h2>
+    <p class="note">Pick an edit tool above the picture. Zoom with the buttons, the mouse wheel or a two-finger pinch; drag with the Pan tool (or the middle mouse button / two fingers) to move around. Edits feed the DXF directly. A re-trace (changing Processing settings) discards contour edits; drawn lines are kept.</p>
+    <div class="row"><label class="row"><input id="snapV" type="checkbox" checked> Snap to vertices</label><label class="row"><input id="snapG" type="checkbox"> Snap to grid</label>
+      <label>grid <input id="snapGs" type="number" class="n70 len" min="0.001" step="any" value="0.25" inputmode="decimal"> <span class="u">in</span></label></div>
+    <div class="row">Eraser removes <select id="eraseMode" aria-label="Eraser mode"><option value="cut">the whole cut</option><option value="seg">one segment (opens the cut)</option></select></div>
+    <div class="row"><label>Bridge width <input id="bridgeW" type="number" class="n70 len" min="0.001" step="any" value="0.125" inputmode="decimal"> <span class="u">in</span></label></div>
+    <div class="row"><button id="drawFinish" type="button">Finish line</button><button id="drawClose" type="button">Close shape</button><button id="drawCancel" type="button">Cancel</button></div>
+    <div class="row"><button id="undo2" type="button">Undo</button><button id="redo2" type="button">Redo</button><button id="recalcOrder" type="button">Recalculate cut order</button></div>
+    <div id="editNote" class="note" aria-live="polite"></div>
+  </section>
+  <section id="s-frame">
+    <h2>Frame</h2>
+    <label class="row"><input id="frOn" type="checkbox"> Add a frame around the artwork</label>
+    <div class="row">Shape <select id="frShape" aria-label="Frame shape"><option value="rect">rectangle</option><option value="round">rounded rectangle</option><option value="ellipse">circle / ellipse</option></select></div>
+    <div class="row" id="frRadRow"><label>Corner radius <input id="frRad" type="number" class="n70 len" min="0" step="any" value="0.5" inputmode="decimal"> <span class="u">in</span></label></div>
+    <label class="row"><input id="frCircle" type="checkbox"> Force a true circle (not an ellipse)</label>
+    <div class="row"><label>Offset from artwork <input id="frOff" type="number" class="n70 len" min="0" step="any" value="0.5" inputmode="decimal"> <span class="u">in</span></label></div>
+    <div class="row">Style <select id="frStyle" aria-label="Frame style"><option value="band">double outline: frame band / plate</option><option value="single">single outline</option></select></div>
+    <div class="row" id="frWRow"><label>Frame width <input id="frW" type="number" class="n70 len" min="0.001" step="any" value="0.5" inputmode="decimal"> <span class="u">in</span></label></div>
+    <h3>Bridges to the artwork</h3>
+    <label class="row"><input id="frBr" type="checkbox"> Connect the artwork to the frame with bridges</label>
+    <div class="row"><label>Per side <input id="frBrN" type="number" class="n50" min="1" max="10" step="1" value="1"></label>
+      <label>Width <input id="frBrW" type="number" class="n70 len" min="0.001" step="any" value="0.25" inputmode="decimal"> <span class="u">in</span></label></div>
+    <div class="row">Sides <label class="row"><input id="frBrT" type="checkbox" checked> top</label><label class="row"><input id="frBrB" type="checkbox" checked> bottom</label><label class="row"><input id="frBrL" type="checkbox" checked> left</label><label class="row"><input id="frBrR" type="checkbox" checked> right</label></div>
+    <div id="frNote" class="note" aria-live="polite"></div>
+  </section>
+  <section id="s-layers">
+    <h2>Layers (layered / stacked art)</h2>
+    <p class="note">Splits the picture into N brightness layers. Layer 1 is the base (largest area, everything darker than the lightest threshold); each next layer keeps only darker pixels. Stack the cut parts to build depth.</p>
+    <div class="row"><label>Layers <input id="lyN" type="number" class="n50" min="2" max="12" step="1" value="3"></label>
+      <label>Darkest <input id="lyLo" type="number" class="n50" min="0" max="255" value="60"></label> <label>Lightest <input id="lyHi" type="number" class="n50" min="0" max="255" value="200"></label></div>
+    <div class="row"><button id="lyAuto" type="button">Spread thresholds evenly</button> <small>thresholds: <span id="lyThr"></span></small></div>
+    <label class="row"><input id="lyBase" type="checkbox"> Add a solid base plate as layer 1</label>
+    <div class="row"><label>Plate margin <input id="lyMargin" type="number" class="n70 len" min="0" step="any" value="0.5" inputmode="decimal"> <span class="u">in</span></label></div>
+    <div class="row">Alignment <select id="lyAlign" aria-label="Alignment aids"><option value="none">none</option><option value="holes" selected>alignment holes (cut in every layer)</option><option value="marks">registration marks (REG layer, not cut)</option></select>
+      <label>Hole Ø <input id="lyHole" type="number" class="n70 len" min="0.01" step="any" value="0.25" inputmode="decimal"> <span class="u">in</span></label></div>
+    <div class="row"><label>Material thickness (3D) <input id="lyT" type="number" class="n70 len" min="0.001" step="any" value="0.125" inputmode="decimal"> <span class="u">in</span></label> <label>spacing <input id="lyGap" type="number" class="n70 len" min="0" step="any" value="0.05" inputmode="decimal"></label></div>
+    <div class="row">Export <select id="lyOut" aria-label="Layer export"><option value="zip">zip: one DXF per layer</option><option value="single">single DXF, layers LAYER_1…N</option><option value="both">both (zip incl. combined DXF)</option></select></div>
+    <div class="row"><button id="lyGo" type="button">Preview layers</button><button id="lyDl" type="button" class="primary">Download layers</button></div>
+    <svg id="lyPrev" class="lyprev" xmlns="http://www.w3.org/2000/svg"></svg>
+    <div id="lyNote" class="note" aria-live="polite"></div>
+  </section>
+  <section id="s-fold">
+    <h2>Fold / Box <small>(v1 of this feature)</small></h2>
+    <p class="note">Enter the box you want; the app works out the bend allowance, bend deduction and flat-pattern size, and recomputes everything live. Open-top box, cross layout, bend lines on the BEND layer (not cut).</p>
+    <div class="row">Dimensions are <select id="fdMode" aria-label="Dimension mode"><option value="outside" selected>outside</option><option value="inside">inside</option></select></div>
+    <div class="row sizerow"><label>Length L <input id="fdL" type="number" class="n70 len" min="0.01" step="any" value="6" inputmode="decimal"></label><label>Width W <input id="fdW" type="number" class="n70 len" min="0.01" step="any" value="4" inputmode="decimal"></label><label>Height H <input id="fdH" type="number" class="n70 len" min="0.01" step="any" value="2" inputmode="decimal"></label> <span class="u">in</span></div>
+    <div class="row"><label>Scale <input id="fdScale" type="number" class="n70" min="1" step="any" value="100"> %</label> <small>(applies to L, W, H)</small></div>
+    <div class="row">Material <select id="fdMat" aria-label="Material"><option value="steel" selected>mild steel</option><option value="alu">aluminium</option><option value="ss">stainless steel</option><option value="custom">custom</option></select>
+      <button id="fdSaveK" type="button" title="Store the K-factor below as this material's preset">Save K as preset</button></div>
+    <div class="row sizerow"><label>Thickness T <input id="fdT" type="number" class="n70 len" min="0.001" step="any" value="0.125" inputmode="decimal"></label><label>Inside radius R <input id="fdR" type="number" class="n70 len" min="0" step="any" value="0.125" inputmode="decimal"></label> <span class="u">in</span></div>
+    <div class="row sizerow"><label>K-factor <input id="fdK" type="number" class="n70" min="0" max="1" step="0.01" value="0.44"></label><label>Bend angle <input id="fdA" type="number" class="n70" min="1" max="180" step="any" value="90"> °</label></div>
+    <div class="row sizerow"><label>Corner relief Ø <input id="fdRel" type="number" class="n70 len" min="0" step="any" value="0" inputmode="decimal"></label> <small>0 = auto (radius T + R)</small>
+      <label>Kerf allowance <input id="fdKerf" type="number" class="n70 len" min="0" step="any" value="0" inputmode="decimal"></label> <span class="u">in</span></div>
+    <h3>Face images</h3>
+    <p class="note">Optional: an image per face is traced with the Processing settings and scaled to that face's flat size.</p>
+    <div class="row">Images become <select id="fdImgMode" aria-label="Face image mode"><option value="cut">cut-outs (dark shapes fall out)</option><option value="inv">inverted (light areas fall out)</option></select>
+      <label>margin <input id="fdMargin" type="number" class="n70 len" min="0" step="any" value="0.25" inputmode="decimal"></label></div>
+    <label class="row"><input id="fdMirror" type="checkbox" checked> Readable from the outside of the folded box (mirror in the flat)</label>
+    <div id="fdFaces" class="fdfaces"></div>
+    <div class="row"><button id="fdDl" type="button" class="primary">Download flat pattern DXF</button></div>
+    <div id="fdNote" class="note" aria-live="polite"></div>
+  </section>
+  <section id="s-3d">
+    <h2>3D Preview</h2>
+    <div class="row">Show <select id="v3Src" aria-label="3D source"><option value="fold">Fold / Box pattern</option><option value="layers">Layered stack</option></select></div>
+    <label>Fold <output id="o_v3Fold">100</output> %<input id="v3Fold" type="range" min="0" max="100" value="100"></label>
+    <div class="row"><button id="v3Play" type="button">▶ Animate fold</button><button id="v3Reset" type="button">Reset view</button></div>
+    <label class="row"><input id="v3Holes" type="checkbox" checked> Show cut-outs</label>
+    <p class="note">Drag to orbit, wheel or pinch to zoom. Lightweight built-in renderer (no downloads); loaded only when this tab is opened.</p>
+    <div id="v3Note" class="note"></div>
+  </section>
+  <section id="s-hist">
+    <h2>History</h2>
+    <p class="note" id="histWhere">Images you open are saved on this device with their settings.</p>
+    <div class="row"><button id="histSave" type="button">Save current now</button><button id="histClear" type="button">Clear all</button></div>
+    <div class="row"><label>Keep up to <input id="histCap" type="number" class="n50" min="5" max="500" step="1" value="40" data-keep></label> items / <input id="histMB" type="number" class="n50" min="10" max="2000" step="10" value="200" data-keep> MB</div>
+    <div id="histList" class="histlist"></div>
+    <div id="histNote" class="note" aria-live="polite"></div>
   </section>
 </aside>
 <section id="view">
@@ -185,7 +281,8 @@
     <label><input id="showImg" type="checkbox" checked> Image</label>
     <label><input id="showMask" type="checkbox"> Threshold preview</label>
     <label><input id="showVec" type="checkbox" checked> Vectors</label>
-    <button id="undoEdit" disabled title="Undo the last merge / re-scan">Undo</button>
+    <button id="undoEdit" disabled title="Undo the last merge / re-scan">Undo</button><button id="redoEdit" disabled title="Redo">Redo</button>
+    <span class="zoombtns"><button id="zOut" type="button" title="Zoom out" aria-label="Zoom out">−</button><button id="zIn" type="button" title="Zoom in" aria-label="Zoom in">+</button><button id="zFit" type="button" title="Fit the whole picture">Fit</button></span>
     <button id="clearImg" disabled title="Remove the image and reset contours, selection, grid, zones and crop">Clear image</button>
     <span id="info" class="note"></span>
   </div>
@@ -196,17 +293,31 @@
     <label><input type="radio" name="tool" value="zone"> Zones</label>
     <label><input type="radio" name="tool" value="crop"> Crop</label>
     <label><input type="radio" name="tool" value="rescan"> Re-scan</label></div>
+  <div class="row tools" id="editRow">Edit:
+    <label><input type="radio" name="tool" value="e-select"> Select</label>
+    <label><input type="radio" name="tool" value="e-pan"> Pan</label>
+    <label><input type="radio" name="tool" value="e-erase"> Eraser</label>
+    <label><input type="radio" name="tool" value="e-draw"> Draw line</label>
+    <label><input type="radio" name="tool" value="e-move"> Move vertex</label>
+    <label><input type="radio" name="tool" value="e-straight"> Straighten</label>
+    <label><input type="radio" name="tool" value="e-bridge"> Connect / bridge</label>
+    <label><input type="radio" name="tool" value="e-split"> Split</label></div>
   <div id="stage"><svg id="svg" xmlns="http://www.w3.org/2000/svg"></svg><div id="empty">No image loaded</div></div>
 </section>
+<section id="foldView" class="sideview"><div class="toolbar"><b>Flat pattern</b> <span id="fdInfo" class="note"></span></div><div class="fdwrap"><svg id="fdSvg" xmlns="http://www.w3.org/2000/svg"></svg></div><div id="fdMath" class="fdmath"></div></section>
+<section id="view3d" class="sideview"><canvas id="c3d"></canvas></section>
 <aside id="listPanel">
   <h2>Contours <small id="selCount"></small></h2>
   <div class="row"><button id="selAll">Select all</button><button id="selNone">Clear</button><button id="selInv">Invert</button><button id="selArea" title="Select contours whose bounding box touches the area of interest">In area</button></div>
   <ul id="list"></ul>
 </aside>
 </main>
-<script src="js/theme.js"></script>
-<script src="js/polygon-clipping.umd.min.js"></script>
-<script src="js/trace.js"></script>
-<script src="js/dxf.js"></script>
-<script src="js/app.js"></script>
+<script src="js/theme.js?v=1.5.0-b9"></script>
+<script src="js/polygon-clipping.umd.min.js?v=1.5.0-b9"></script>
+<script src="js/trace.js?v=1.5.0-b9"></script>
+<script src="js/dxf.js?v=1.5.0-b9"></script>
+<script src="js/app.js?v=1.5.0-b9"></script>
+<script src="js/version.js?v=1.5.0-b9"></script>
+<script src="js/v15.js?v=1.5.0-b9"></script>
+<script src="js/fold.js?v=1.5.0-b9"></script>
 </body></html>

@@ -13,7 +13,56 @@
   }
 
   /** entities: [{layer, pts:[[x,y],..], closed}] in output units (y up), written in the given order. unit 'mm'|'in'. */
-  function writeEntities(entities, unit) {
+  let FMT = "r2000";
+  const FORMATS = { r2000: "R2000 (AC1015) LWPOLYLINE", r12: "R12 compatible (AC1009) POLYLINE", torchmate: "TorchMate-friendly (R12, closed POLYLINEs, single CUT layer)" };
+  function setFormat(f) { FMT = FORMATS[f] ? f : "r2000"; return FMT; }
+  const NONCUT = /^(PARK|TABLE_FRAME|REG|BEND|LABEL)/i;
+  /** R12 (AC1009) writer: POLYLINE/VERTEX/SEQEND, no handles. torchmate=true keeps only cut geometry on one layer. */
+  function writeR12(entities, unit, torchmate) {
+    if (torchmate) entities = entities.filter(e => !NONCUT.test(e.layer) && e.kind !== "point" && e.kind !== "text").map(e => Object.assign({}, e, { layer: "CUT" }));
+    const out = []; const add = (c, v) => out.push(String(c), String(v)); const asc = t => String(t).replace(/[^\x20-\x7e]/g, "?");
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    entities.forEach(e => (e.kind === "circle" ? [[e.c[0] - e.r, e.c[1] - e.r], [e.c[0] + e.r, e.c[1] + e.r]] : e.pts).forEach(([x, y]) => { if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; }));
+    if (!isFinite(x0)) x0 = y0 = x1 = y1 = 0;
+    const names = []; entities.forEach(e => { if (names.indexOf(e.layer) < 0 && e.layer !== "0") names.push(e.layer); });
+    add(0, "SECTION"); add(2, "HEADER");
+    add(9, "$ACADVER"); add(1, "AC1009");
+    add(9, "$INSBASE"); add(10, 0); add(20, 0); add(30, 0);
+    add(9, "$EXTMIN"); add(10, num(x0)); add(20, num(y0)); add(30, 0);
+    add(9, "$EXTMAX"); add(10, num(x1)); add(20, num(y1)); add(30, 0);
+    add(9, "$LUNITS"); add(70, 2); add(9, "$LUPREC"); add(70, 4);
+    add(9, "$INSUNITS"); add(70, unit === "in" ? 1 : 4);
+    add(0, "ENDSEC");
+    add(0, "SECTION"); add(2, "TABLES");
+    add(0, "TABLE"); add(2, "LTYPE"); add(70, 1);
+    add(0, "LTYPE"); add(2, "CONTINUOUS"); add(70, 0); add(3, "Solid line"); add(72, 65); add(73, 0); add(40, 0);
+    add(0, "ENDTAB");
+    const lay = ["0"].concat(names);
+    add(0, "TABLE"); add(2, "LAYER"); add(70, lay.length);
+    lay.forEach((n, i) => { add(0, "LAYER"); add(2, n); add(70, 0); add(62, i === 0 ? 7 : 1 + ((i - 1) % 6)); add(6, "CONTINUOUS"); });
+    add(0, "ENDTAB");
+    add(0, "TABLE"); add(2, "STYLE"); add(70, 1);
+    add(0, "STYLE"); add(2, "STANDARD"); add(70, 0); add(40, 0); add(41, 1); add(50, 0); add(71, 0); add(42, 2.5); add(3, "txt"); add(4, "");
+    add(0, "ENDTAB");
+    add(0, "ENDSEC");
+    add(0, "SECTION"); add(2, "BLOCKS"); add(0, "ENDSEC");
+    add(0, "SECTION"); add(2, "ENTITIES");
+    entities.forEach(e => {
+      const q = e.pts, cl = e.closed !== false;
+      if (e.kind === "point") { add(0, "POINT"); add(8, e.layer); add(10, num(q[0][0])); add(20, num(q[0][1])); add(30, 0); return; }
+      if (e.kind === "circle") { add(0, "CIRCLE"); add(8, e.layer); add(10, num(e.c[0])); add(20, num(e.c[1])); add(30, 0); add(40, num(e.r)); return; }
+      if (e.kind === "text") { add(0, "TEXT"); add(8, e.layer); add(10, num(q[0][0])); add(20, num(q[0][1])); add(30, 0); add(40, num(e.h)); add(1, asc(e.text)); return; }
+      if (q.length < (cl ? 3 : 2)) return;
+      add(0, "POLYLINE"); add(8, e.layer); add(66, 1); add(10, 0); add(20, 0); add(30, 0); add(70, cl ? 1 : 0);
+      q.forEach(([x, y]) => { add(0, "VERTEX"); add(8, e.layer); add(10, num(x)); add(20, num(y)); add(30, 0); });
+      add(0, "SEQEND"); add(8, e.layer);
+    });
+    add(0, "ENDSEC"); add(0, "EOF");
+    return out.join("\r\n") + "\r\n";
+  }
+  function writeEntities(entities, unit, fmt) {
+    fmt = fmt || FMT;
+    if (fmt === "r12" || fmt === "torchmate") return writeR12(entities, unit, fmt === "torchmate");
     const groups = [];
     { const idx = {}; entities.forEach(e => { if (!(e.layer in idx)) { idx[e.layer] = groups.length; groups.push({ name: e.layer, polys: [] }); } groups[idx[e.layer]].polys.push(e.pts); }); }
     let seed = 0x30; const H = () => (seed++).toString(16).toUpperCase();
@@ -98,14 +147,14 @@
 
   /** DXF check: parse a DXF text back (LWPOLYLINE vertices + $INSUNITS) and measure its real extents, independent of the writer. */
   function measureDxf(text) {
-    const L = String(text).split(/\r?\n/); let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity, n = 0, units = null, sec = "", inPoly = false, lastX = null, hdr = null;
+    const L = String(text).split(/\r?\n/); let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity, n = 0, units = null, sec = "", inPoly = false, head = false, lastX = null, hdr = null;
     for (let i = 0; i + 1 < L.length; i += 2) {
       const c = L[i].trim(), v = L[i + 1].trim();
       if (c === "0" && v === "SECTION") { sec = ""; continue; }
       if (c === "2" && sec === "" ) { sec = v; continue; }
       if (sec === "HEADER") { if (c === "9") hdr = v; else if (hdr === "$INSUNITS" && c === "70") units = +v; continue; }
       if (sec !== "ENTITIES") continue;
-      if (c === "0") { inPoly = v === "LWPOLYLINE"; if (inPoly) n++; lastX = null; continue; }
+      if (c === "0") { lastX = null; if (v === "VERTEX") { if (head) { head = false; inPoly = true; } continue; } head = v === "POLYLINE"; inPoly = v === "LWPOLYLINE"; if (inPoly || head) n++; continue; }
       if (!inPoly) continue;
       if (c === "10") lastX = parseFloat(v);
       else if (c === "20" && lastX !== null) { const y = parseFloat(v); if (lastX < x0) x0 = lastX; if (lastX > x1) x1 = lastX; if (y < y0) y0 = y; if (y > y1) y1 = y; lastX = null; }
@@ -306,8 +355,10 @@
     let ordered;
     if (split === "files") ordered = groups.flatMap(([name, items]) => orderUnits(planGroup(name, items), o));
     else ordered = orderUnits(groups.flatMap(([name, items]) => planGroup(name, items)), o);
+    (o.extra || []).forEach((x, k) => { if (!x.pts || x.pts.length < 2) return;
+      ordered.push({ layer: split === "none" ? (x.layerNone || "CUT") : (x.layer || "CUT_EXTRA"), cid: "e" + k, depth: 0, extra: x.kind || "line", paths: [{ pts: toOut(x.pts), closed: x.closed !== false }] }); });
     const entities = [];
-    ordered.forEach((u, k) => { stats.units++; stats.maxDepth = Math.max(stats.maxDepth, u.depth); u.paths.forEach(p => entities.push({ layer: u.layer, pts: p.pts, closed: p.closed, cid: u.cid, depth: u.depth, seq: k + 1 })); });
+    ordered.forEach((u, k) => { stats.units++; stats.maxDepth = Math.max(stats.maxDepth, u.depth); u.paths.forEach(p => entities.push({ layer: u.layer, pts: p.pts, closed: p.closed, cid: u.cid, depth: u.depth, seq: k + 1, extra: u.extra })); });
     const layers = []; entities.forEach(e => { if (layers.indexOf(e.layer) < 0) layers.push(e.layer); });
     return { entities, layers, gaps, stats };
   }
@@ -531,7 +582,8 @@
     const units = [], by = new Map();
     ents.forEach((e, i) => { const k = e.seq != null ? "s" + e.seq : "x" + i; let u = by.get(k);
       if (!u) { u = { depth: e.depth || 0, cid: e.cid, paths: [] }; by.set(k, u); units.push(u); } u.paths.push(Object.assign({}, e, { closed: e.closed !== false })); });
-    const ord = orderUnits(units, { insideFirst: !!T.insideFirst, nearest: !!T.nearest }, start), out = [];
+    const fr = units.filter(u => u.paths.some(p => p.extra === "frame")), rest = units.filter(u => fr.indexOf(u) < 0);
+    const ord = orderUnits(rest, { insideFirst: !!T.insideFirst, nearest: !!T.nearest }, start).concat(fr), out = [];
     ord.forEach((u, k) => u.paths.forEach(p => out.push(Object.assign({}, p, { pseq: k + 1 }))));
     return out;
   }
@@ -607,6 +659,10 @@
 
   /** High level export: returns {bytes:Uint8Array|string, mime, filename, paths, groups, plan} */
   async function exportDxf(polys, o) {
+    const prev = FMT; setFormat(o.format || "r2000");
+    try { return await exportDxf0(polys, o); } finally { FMT = prev; }
+  }
+  async function exportDxf0(polys, o) {
     const plan = buildPlan(polys, o); let ents = plan.entities;
     const enc = new TextEncoder(), paths = ents.length;
     if (o.table && o.table.on) {
@@ -630,6 +686,6 @@
     return { bytes: enc.encode(text), mime: "application/dxf", filename: "cut.dxf", paths, groups: plan.layers.length, plan, check: measureDxf(text) };
   }
 
-  const api = { nestParents, nestRoots, mergeContours, axisPlan, clipPolyline, sectionize, tableFiles, planText, measureDxf, entitiesBox, bboxOf, writeDxf, writeEntities, buildPlan, buildGroups, exportDxf, makeZip, crc32, nestingDepths, ringTabs, orderUnits };
+  const api = { nestParents, nestRoots, mergeContours, axisPlan, clipPolyline, sectionize, tableFiles, planText, measureDxf, entitiesBox, bboxOf, writeDxf, writeEntities, buildPlan, buildGroups, exportDxf, makeZip, crc32, nestingDepths, ringTabs, orderUnits, setFormat, FORMATS, writeR12, inRing };
   if (typeof module !== "undefined" && module.exports) module.exports = api; else root.I2D_DXF = api;
 })(typeof self !== "undefined" ? self : this);

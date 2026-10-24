@@ -67,6 +67,7 @@ class Ctx:
     def load(self, img, wait_list=True):
         p = self.page
         p.goto(URL)
+        p.evaluate("__i2d.tab('all')")       # Hard 1.5: show every section (classic layout) for the older tests
         p.set_input_files("#fileIn", img)
         p.wait_for_function("document.getElementById('status').textContent.startsWith('Traced')", timeout=20000)
         self.settle(300)

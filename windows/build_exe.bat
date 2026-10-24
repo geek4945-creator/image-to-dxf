@@ -12,7 +12,7 @@ exit /b 1
 "venv\Scripts\python.exe" -m pip install --upgrade pyinstaller
 if errorlevel 1 goto :fail
 "venv\Scripts\python.exe" -m PyInstaller --noconfirm --clean --onedir --console --name ImageToDXF ^
-  --add-data "static;static" --collect-submodules shapely --hidden-import app --hidden-import selection --hidden-import pipeline --hidden-import urlfetch ^
+  --add-data "static;static" --add-data "web;web" --icon "icon.ico" --collect-submodules shapely --hidden-import desktop_api --hidden-import app --hidden-import selection --hidden-import pipeline --hidden-import urlfetch ^
   launcher.py
 if errorlevel 1 goto :fail
 rem copy the no-install browser edition next to the exe

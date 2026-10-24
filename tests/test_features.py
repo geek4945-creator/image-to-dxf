@@ -117,7 +117,7 @@ class Ctx:
 
     def fresh(self, img=NESTED):
         p = self.page
-        p.goto(URL)
+        p.goto(URL); p.evaluate("__i2d.tab('all')")
         p.set_input_files("#fileIn", img)
         p.wait_for_function("document.querySelectorAll('#list li[data-id]').length>0", timeout=15000)
         # legacy feature checks assume frame-based sizing (100 mm = whole image width); shape-based sizing is tested in test_web_size.py

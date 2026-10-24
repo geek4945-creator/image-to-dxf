@@ -2,7 +2,7 @@
 const $ = id => document.getElementById(id);
 const S = {id:null, gray:null, W:0, H:0, fullGray:null, fullW:0, fullH:0, crop:null, cropSel:null, imgURL:null, fullURL:null, cropURL:null, maskURL:null,
            paths:[], items:[], selected:new Set(), cells:new Set(), areas:[], zones:[], zoneN:0, zsel:null, tabbed:new Set(), mask:null, plan:null,
-           tool:'contour', hl:null, drag:null, edit:null, seq:0, areaN:0, loadTok:0, undo:[], edits:0, rs:null, sec:null};
+           tool:'contour', hl:null, drag:null, edit:null, seq:0, areaN:0, loadTok:0, undo:[], redo:[], lines:[], edits:0, rs:null, sec:null};
 window.__i2d = {S, dxfExtents:()=>dxfExtents(), exportBox:()=>exportBox(), refresh:()=>renderAll()};   // read-only debug/test hook
 const NUM = ['threshold','blur','speckle','tolerance','min_feature'];
 const BOOL = ['auto','invert','holes','drop_frame'];
@@ -26,7 +26,7 @@ function traceGray(){                       // source pixels for tracing (option
 // image-derived state (reset when an image is loaded or cleared)
 function resetState(){
   Object.assign(S,{paths:[],items:[],selected:new Set(),cells:new Set(),areas:[],areaN:0,zones:[],zoneN:0,zsel:null,tabbed:new Set(),crop:null,cropSel:null,
-    mask:null,maskURL:null,hl:null,drag:null,edit:null,plan:null,info:null,undo:[],edits:0,rs:null,sec:null});
+    mask:null,maskURL:null,hl:null,drag:null,edit:null,plan:null,info:null,undo:[],redo:[],edits:0,rs:null,sec:null,lines:[],vb:null});
 }
 function revokeImageURLs(){ [S.fullURL,S.cropURL].forEach(u=>{ if(u) URL.revokeObjectURL(u); }); S.fullURL=S.cropURL=S.imgURL=null; }
 
@@ -64,6 +64,7 @@ async function loadBlob(b){
   $('empty').style.display='none'; $('svg').style.display='block';
   syncSize(); renderCrop();
   setStatus(`Loaded ${r.w}×${r.h}px`+(r.w!==w0?` (downscaled from ${w0}×${h0})`:'')); await retrace(true);
+  if(window.I2D_onLoad) try{ I2D_onLoad(b); }catch(e){ console.error(e); }
 }
 async function sendFile(f){
   try{ setStatus('Loading…'); await loadBlob(f); }
@@ -143,8 +144,8 @@ async function retrace(first){
       const sc=computeScale();
       if(pass>=2||!sc.ok||(Math.abs(sc.sx/p.scale-1)<0.02&&Math.abs(sc.sy/p.scaleY-1)<0.02)) break;
     }
-    S.undo=[]; S.edits=0; S.rs=null; renderUndo();
-    setStatus(`Traced in ${Math.round(performance.now()-t0)} ms`+(hadEdits?' · merge / re-scan edits were discarded by the re-trace':'')); renderAll();
+    S.undo=[]; S.redo=[]; S.edits=0; S.rs=null; S.lines=(S.lines||[]).filter(l=>l.drawn); renderUndo();
+    setStatus(`Traced in ${Math.round(performance.now()-t0)} ms`+(hadEdits?' · merge / re-scan / contour edits were discarded by the re-trace (drawn lines are kept)':'')); renderAll();
     const e=dxfExtents(), u=$('unit').value;
     $('info').textContent=`${r.info.paths} contours · ${r.info.vertices} vertices`+(e?` · DXF ${fmt(e.w,5)}×${fmt(e.h,5)} ${u}`:'')+` · ${r.info.dropped} dropped`;
   }catch(e){ setStatus(e.message,true); }
@@ -241,6 +242,7 @@ function convertUnits(){            // keep sizes physically the same when switc
     if(slider){ const cfg={tolerance:{mm:[5,0.05],in:[0.2,0.001]},min_feature:{mm:[50,0.5],in:[2,0.01]}}[k][u]; el.max=cfg[0]; el.step=cfg[1]; el.value=Math.min(cfg[0],v); const o=$('o_'+k); if(o) o.textContent=el.value; }
     else{ el.value=fmt(v,7); el.dataset.last=el.value; }
   });
+  document.querySelectorAll('input.len').forEach(el=>{ const v=parseFloat(el.value); if(isFinite(v)) el.value=fmt(v*f,7); });   // Hard 1.5 fields (frame, edit, layers, fold)
   curUnit=u; document.querySelectorAll('.u').forEach(x=>x.textContent=u);
 }
 NUM.concat(BOOL).forEach(k=>{ const el=$(k); el.addEventListener('input',()=>{ const o=$('o_'+k); if(o) o.textContent=el.value; schedule(); renderGrid(); }); });
@@ -360,17 +362,18 @@ function exportOpts(){
   return {pxW:S.W,pxH:S.H,scale:sc.sx,scaleY:sc.sy,unit:$('unit').value,selected:effectiveSelected(),table,
     regions:$('limitArea').checked?regions():[],clip:$('clip').checked,split:splitEff,groupBy:$('groupBy').value,zeroOrigin:$('zero').checked,
     insideFirst:$('insideFirst').checked,nearest:$('nearest').checked,innerOuterLayers:$('ioLayers').checked&&splitEff==='none',
-    isHole:S.items.map(i=>i.hole),tabs:tabOpts()};
+    isHole:S.items.map(i=>i.hole),tabs:tabOpts(),format:($('dxfFmt')||{}).value||'r2000',extra:window.I2D_EXTRA?I2D_EXTRA():[]};
 }
+function prepExport(o){ let polys=S.paths; if(window.I2D_PREP){ const r=I2D_PREP(polys,o); if(r){ polys=r.polys; o=r.o; } } return [polys,o]; }  // hook: frame bridges etc.
 function updatePlan(){
   S.plan=null; S.sec=null; $('tabNote').textContent=''; $('orderNote').textContent=''; $('tblNote').textContent='';
   if(!S.items.length||!computeScale().ok) return;
-  const o=exportOpts();
+  let o=exportOpts(), polys; [polys,o]=prepExport(o);
   const need=o.tabs||o.insideFirst||o.nearest||$('showOrder').checked||o.table.on;
   if(!need||!o.selected.length){ if(o.tabs) $('tabNote').textContent='Nothing selected for export.'; return; }
-  try{ S.plan=D.buildPlan(S.paths,o); }catch(e){ $('tabNote').textContent=e.message; return; }
+  try{ S.plan=D.buildPlan(polys,o); }catch(e){ $('tabNote').textContent=e.message; return; }
   if(o.table.on){
-    try{ S.sec=D.sectionize(S.plan.entities,Object.assign({unit:o.unit},o.table),rootsOf());
+    try{ S.sec=D.sectionize(S.plan.entities,Object.assign({unit:o.unit,insideFirst:o.insideFirst,nearest:o.nearest},o.table),polys===S.paths?rootsOf():D.nestRoots(polys));
       const N=S.sec.passes.length, w=S.sec.warnings;
       $('tblNote').textContent=(N===1?'The job fits on the table: 1 pass (park marker still added).':`${N} passes (${S.sec.cols.length} × ${S.sec.rows.length}). Next to the preview: dashed frames = table position, shaded blocks = what each pass cuts.`)+(w.length?' ⚠ '+w.join(' ⚠ '):''); }
     catch(e){ $('tblNote').textContent='⚠ '+e.message; }
@@ -379,6 +382,7 @@ function updatePlan(){
   if(o.insideFirst||o.nearest) $('orderNote').textContent=`DXF entity order: ${o.insideFirst?`inner contours first (deepest nesting ${st.maxDepth} → 0)`:'file order'}${o.nearest?', nearest-neighbour within each level':''} · ${st.units} cut(s).`
     +($('ioLayers').checked&&o.split!=='none'?' (CUT_INNER/OUTER layers only apply to one-file mode)':'');
   else if($('ioLayers').checked&&o.split==='none') $('orderNote').textContent='';
+  if(S.sec&&S.sec.passes.length>1) $('orderNote').textContent+=` Table job: Pass 1 is cut first; numbering restarts in each pass (P1·1, P1·2 … P2·1 …).`;
   if(o.tabs) $('tabNote').textContent=`${st.tabbed} contour(s) get ${st.tabs} tab(s) of ${$('tabW').value} ${$('unit').value}`+(st.tabSkipped?` · ${st.tabSkipped} too small for tabs (left closed)`:'')+'.';
 }
 function recalc(){ $('dxfCheck').textContent=''; syncSize(); updatePlan(); renderSizeOut(); }       // scale -> plan -> readout, in that order
@@ -403,7 +407,7 @@ function rectSvg(kind,id,rect,cls,label){
 }
 function renderSvg(){
   const svg=$('svg'); if(!S.gray){return;}
-  svg.setAttribute('viewBox',`0 0 ${S.W} ${S.H}`); svg.style.width=Math.min(S.W,1400)+'px'; svg.style.aspectRatio=`${S.W}/${S.H}`; svg.setAttribute('class','tool-'+S.tool);
+  { const vb=S.vb||(window.I2D_VB&&I2D_VB()); svg.setAttribute('viewBox',vb?vb.join(' '):`0 0 ${S.W} ${S.H}`); } svg.style.width=Math.min(S.W,1400)+'px'; svg.style.aspectRatio=`${S.W}/${S.H}`; svg.setAttribute('class','tool-'+S.tool);
   let h='';
   if($('showImg').checked) h+=`<image href="${S.imgURL}" width="${S.W}" height="${S.H}"/>`;
   if($('showMask').checked && S.mask) h+=`<image href="${maskURL()}" width="${S.W}" height="${S.H}" opacity=".6" style="mix-blend-mode:multiply"/>`;
@@ -423,6 +427,13 @@ function renderSvg(){
     S.plan.gaps.forEach(g=>{ h+=`<polyline class="tabhalo" points="${g.pts.map(p=>toPx(p).join(',')).join(' ')}"/><polyline class="tabgap" points="${g.pts.map(p=>toPx(p).join(',')).join(' ')}"/>`; });
     if($('showOrder').checked){
       const k=S.W/(($('svg').getBoundingClientRect().width)||S.W), seen=new Set(); let n=0;
+      const sec=$('tblOn').checked&&S.sec&&S.sec.passes.length?S.sec:null;
+      if(sec){                                                                 // table job: numbers restart in every pass, Pass 1 first
+        const multi=sec.passes.length>1;
+        for(const P of sec.passes){ const pseen=new Set();
+          for(const e of P.ents){ if(e.cid<0||pseen.has(e.pseq)) continue; pseen.add(e.pseq); if(++n>800) break; const [x,y]=toPx(e.pts[0]);
+            h+=`<text class="ord" data-pass="${P.n}" x="${x}" y="${y}" style="font-size:${12*k}px">${multi?'P'+P.n+'·':''}${e.pseq}</text>`; } }
+      } else
       for(const e of S.plan.entities){ if(seen.has(e.seq)) continue; seen.add(e.seq); if(++n>800) break; const [x,y]=toPx(e.pts[0]);
         h+=`<text class="ord" x="${x}" y="${y}" style="font-size:${12*k}px">${e.seq}</text>`; }
     }
@@ -438,6 +449,7 @@ function renderSvg(){
   if(S.cropSel){ const [x0,y0,x1,y1]=S.cropSel; h+=`<path class="cropdim" fill-rule="evenodd" d="M0 0H${S.W}V${S.H}H0Z M${x0} ${y0}H${x1}V${y1}H${x0}Z"/>`+rectSvg('crop',0,S.cropSel,'cropsel','CROP'); }
   if(S.drag){const [x0,y0,x1,y1]=normRect(S.drag.rect); h+=`<rect class="${S.drag.kind==='zone'?'zone sel':S.drag.kind==='crop'?'cropsel':S.drag.kind==='rescan'?'rsarea':'area'}" x="${x0}" y="${y0}" width="${x1-x0}" height="${y1-y0}" style="pointer-events:none"/>`;}
   h+=rescanSvg()+tableSvg();
+  if(window.I2D_OVERLAY) try{ h+=I2D_OVERLAY(); }catch(e){ console.error(e); }
   svg.innerHTML=h;
 }
 ['showImg','showMask','showVec'].forEach(k=>$(k).onchange=renderSvg);
@@ -523,18 +535,26 @@ svgEl.addEventListener('pointerup',e=>{
 });
 
 // ---------- undoable contour edits (merge touching cuts, re-scan)
-function pushUndo(label){ S.undo.push({label,paths:S.paths,items:S.items,selected:new Set(S.selected),tabbed:new Set(S.tabbed)}); if(S.undo.length>20) S.undo.shift(); renderUndo(); }
-function renderUndo(){ const b=$('undoEdit'); b.disabled=!S.undo.length; b.title=S.undo.length?'Undo: '+S.undo[S.undo.length-1].label:'Nothing to undo'; }
+const snapState=label=>({label,paths:S.paths,items:S.items,selected:new Set(S.selected),tabbed:new Set(S.tabbed),lines:S.lines.slice()});
+function pushUndo(label){ S.undo.push(snapState(label)); if(S.undo.length>40) S.undo.shift(); S.redo=[]; renderUndo(); }
+function renderUndo(){ const b=$('undoEdit'); b.disabled=!S.undo.length; b.title=S.undo.length?'Undo: '+S.undo[S.undo.length-1].label:'Nothing to undo';
+  const r=$('redoEdit'); if(r){ r.disabled=!S.redo.length; r.title=S.redo.length?'Redo: '+S.redo[S.redo.length-1].label:'Nothing to redo'; } }
 function setContours(polys,holes,selIdx,label){
   pushUndo(label); const sc=computeScale();
   S.paths=polys; S.items=polys.map((q,i)=>T.makeItem(q,holes[i],i,sc.sx||1,sc.sy||1));
   S.selected=new Set(selIdx); S.tabbed=new Set(); S.edits++; S.hl=null;
 }
 $('undoEdit').onclick=()=>{
-  const u=S.undo.pop(); if(!u) return;
-  Object.assign(S,{paths:u.paths,items:u.items,selected:u.selected,tabbed:u.tabbed,hl:null}); S.edits=Math.max(0,S.edits-1);
+  const u=S.undo.pop(); if(!u) return; S.redo.push(snapState(u.label));
+  Object.assign(S,{paths:u.paths,items:u.items,selected:u.selected,tabbed:u.tabbed,lines:u.lines||[],hl:null}); S.edits=Math.max(0,S.edits-1);
   $('mergeNote').textContent=''; if(S.rs) rsCompute(); setStatus('Undid: '+u.label); renderAll(); renderUndo();
 };
+function redoEdit(){
+  const u=S.redo.pop(); if(!u) return; S.undo.push(snapState(u.label));
+  Object.assign(S,{paths:u.paths,items:u.items,selected:u.selected,tabbed:u.tabbed,lines:u.lines||[],hl:null}); S.edits++;
+  if(S.rs) rsCompute(); setStatus('Redid: '+u.label); renderAll(); renderUndo();
+}
+if($('redoEdit')) $('redoEdit').onclick=redoEdit;
 // --- merge touching cuts
 function mergeScopeIds(){
   const v=$('mergeScope').value;
@@ -702,11 +722,12 @@ function showCheck(r,o){
     return {table:true,files:c.files,perFile:c.perFile,unit:c.unit,ok:c.unit===o.unit&&!(c.warnings&&c.warnings.length),warnings:c.warnings||[]};
   }
   const c=r.check, u=o.unit, uname=c.unit==='in'?'inches':c.unit==='mm'?'mm':'?', el=$('dxfCheck'), f=v=>(+v.toFixed(4)).toString();
-  const b=exportBox(), sc=computeScale(), req=b?{w:b.w*sc.sx,h:b.h*sc.sy}:null, shapes=refName()==='shapes';
+  const b=exportBox(), sc=computeScale(), req=b?{w:b.w*sc.sx,h:b.h*sc.sy}:null, framed=(o.extra||[]).length>0||o.framed, shapes=refName()==='shapes'&&!framed;
   const tol=Math.max(0.005*Math.max(req?req.w:0,req?req.h:0),1e-4)+(o.tabs?o.tabs.width:0);
   const okUnit=c.unit===u, okSize=!req||(Math.abs(c.width-req.w)<=tol&&Math.abs(c.height-req.h)<=tol);
   let t=`DXF check (re-read from the file): ${f(c.width)} × ${f(c.height)} ${u} · units ${uname}${okUnit?'':' ⚠ unexpected'} · ${c.polylines} polylines`+(o.zeroOrigin&&o.split==='files'?' (largest file)':'');
   if(shapes) t+=okSize&&okUnit?` · ✓ matches the size you set (${f(req.w)} × ${f(req.h)} ${u})`:` · ⚠ expected ${req?f(req.w)+' × '+f(req.h):'?'} ${u}`;
+  else if(framed) t+=` · includes the frame / drawn lines, so it is larger than the artwork size you set (${req?f(req.w)+' × '+f(req.h):'?'} ${u})`;
   else t+=' · size was set on the image/frame, so the shapes are smaller than the entered width/height (expected)';
   el.textContent=t; el.className='note strong'+((shapes&&!(okSize&&okUnit))?' err':'');
   return {width:c.width,height:c.height,unit:c.unit,polylines:c.polylines,ok:okUnit&&okSize,requested:req};
@@ -717,21 +738,20 @@ $('download').onclick=async()=>{
     setStatus('Building DXF…'); await new Promise(r=>setTimeout(r,0));
     if(!S.paths.length) throw new Error('Nothing to export: no shapes found with these settings');
     if(!computeScale().ok) throw new Error('Enter a positive output size');
-    const o=exportOpts(); if(!o.selected.length) throw new Error('Nothing to export: every selected contour is in a zone that is switched off');
-    const r=await D.exportDxf(S.paths,o);
+    let o=exportOpts(), polys; if(!o.selected.length) throw new Error('Nothing to export: every selected contour is in a zone that is switched off');
+    [polys,o]=prepExport(o); const r=await D.exportDxf(polys,o);
     lastFile={bytes:r.bytes,mime:r.mime,filename:r.filename};
     const how=await saveFile(lastFile);
     setStatus(`${how==='share'?'Shared':'Downloaded'} ${r.filename} (${r.paths} paths, ${r.groups} group(s))`);
     if(canShareFiles()) $('share').hidden=false;
     const chk=showCheck(r,o);
-    window.__lastExport={filename:r.filename,paths:r.paths,groups:r.groups,stats:r.plan.stats,unit:o.unit,check:chk,sections:r.sections?r.sections.passes.length:0};
+    window.__lastExport={format:o.format,filename:r.filename,paths:r.paths,groups:r.groups,stats:r.plan.stats,unit:o.unit,check:chk,sections:r.sections?r.sections.passes.length:0};
   }catch(e){ setStatus(e.message,true); }
 };
 // ---------- unit default + persistence: inches by default, the choice is remembered on this device
 const UNIT_KEY='i2d.unit';
 function savedUnit(){ try{ const u=localStorage.getItem(UNIT_KEY); return u==='mm'||u==='in'?u:'in'; }catch(e){ return 'in'; } }
-function initUnit(){
-  const u=savedUnit();                         // the HTML defaults are written in mm; convert them once if we start in inches
+function applyUnitDefaults(u){
   $('unit').value=u;
   if(u==='in'){
     convertUnits();
@@ -739,6 +759,11 @@ function initUnit(){
     [['tolerance',0.01],['min_feature',0.04]].forEach(([k,v])=>{ $(k).value=v; $('o_'+k).textContent=v; });
   }
   document.querySelectorAll('.u').forEach(x=>x.textContent=u);
+  document.querySelectorAll('input.len').forEach(el=>{ el.value=fmt(parseFloat(el.defaultValue)*(u==='in'?1:25.4),7); });   // Hard 1.5 fields: HTML defaults are inches
+  curUnit=u;
+}
+function initUnit(){
+  applyUnitDefaults(savedUnit());              // the HTML defaults are written in mm; convert them once if we start in inches
   $('unit').addEventListener('change',()=>{ try{ localStorage.setItem(UNIT_KEY,$('unit').value); }catch(e){} });
   $('unit').addEventListener('input',()=>{ try{ localStorage.setItem(UNIT_KEY,$('unit').value); }catch(e){} });
 }

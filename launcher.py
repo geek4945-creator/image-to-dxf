@@ -3,6 +3,8 @@
   python launcher.py [--port 5000] [--host 127.0.0.1] [--no-browser]
 """
 import argparse
+import os
+import subprocess
 import socket
 import sys
 import threading
@@ -22,6 +24,28 @@ def free_port(host, start):
     raise SystemExit(f"No free port found in {start}-{start + 49}")
 
 
+def auto_update():
+    """Hard 1.5: if 'Auto-update' is on (Version menu), install a newer GitHub release before the server starts."""
+    try:
+        import desktop_api as da
+        if not da.load_settings().get("auto_update"):
+            return
+        print("Checking for updates ...", flush=True)
+        info = da.check_update()
+        if info.get("available"):
+            print(f"Installing update {info['current']} -> {info['latest']} ...", flush=True)
+            print(da.apply_update(info)["message"], flush=True)
+            if not os.environ.get("I2D_RESTARTED"):          # restart once so updated Python files are used
+                os.environ["I2D_RESTARTED"] = "1"
+                sys.exit(subprocess.call([sys.executable] + sys.argv))
+        else:
+            print(f"Up to date ({info.get('current')}).", flush=True)
+    except SystemExit:
+        raise
+    except Exception as e:                                    # never block start-up on an update problem
+        print(f"Update check skipped: {e}", flush=True)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--host", default="127.0.0.1")
@@ -29,6 +53,7 @@ def main():
     ap.add_argument("--no-browser", action="store_true")
     a = ap.parse_args()
     port = free_port(a.host, a.port)
+    auto_update()
     from app import app  # imported late so import errors show a readable message below
 
     url = f"http://{'localhost' if a.host in ('127.0.0.1', '0.0.0.0') else a.host}:{port}/"

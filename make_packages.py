@@ -4,7 +4,7 @@ import os, shutil, zipfile
 HERE = os.path.dirname(os.path.abspath(__file__))
 OUT = os.path.dirname(HERE)
 WINFILES = os.path.join(HERE, "windows")           # bat files + WINDOWS-INSTALL.md live here
-APP = ["app.py", "pipeline.py", "selection.py", "urlfetch.py", "launcher.py",
+APP = ["app.py", "desktop_api.py", "pipeline.py", "selection.py", "urlfetch.py", "launcher.py",
        "requirements.txt", "requirements-pdf.txt", "requirements-dev.txt", "README.md"]
 SKIP = {"__pycache__", ".venv", "venv", "tests", ".pytest_cache", "server.log"}
 
@@ -39,7 +39,7 @@ def main():
     for f in os.listdir(WINFILES):
         shutil.copy(os.path.join(WINFILES, f), win)
     for f in os.listdir(win):
-        if f.endswith((".bat", ".txt")):
+        if f.endswith((".bat", ".txt", ".ps1")):
             crlf(os.path.join(win, f))
     # the Windows package doesn't need dev deps
     os.remove(os.path.join(win, "requirements-dev.txt"))

@@ -37,7 +37,7 @@ def main():
     with sync_playwright() as pw:
         b = pw.chromium.launch(executable_path=CHROME, headless=True,
                                args=["--use-fake-ui-for-media-stream", "--use-fake-device-for-media-stream"])
-        ctx = b.new_context(accept_downloads=True, permissions=["camera"])
+        ctx = b.new_context(accept_downloads=True, permissions=["camera"], viewport={"width": 1280, "height": 1000})
         ctx.add_init_script("try{localStorage.setItem('i2d.unit','mm')}catch(e){}")   # these legacy checks start in mm (the app default is inches: see test_web_size.py)
         page = ctx.new_page()
         errors = []
@@ -45,7 +45,7 @@ def main():
         page.on("console", lambda m: errors.append(m.text) if m.type == "error" and "127.0.0.1" not in m.text and "Failed to load resource" not in m.text else None)
         reqs = []
         page.on("request", lambda r: reqs.append(r.url))
-        page.goto(URL)
+        page.goto(URL); page.evaluate("__i2d.tab('all')")
 
         def status():
             return page.inner_text("#status")

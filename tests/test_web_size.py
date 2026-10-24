@@ -42,7 +42,7 @@ def main():
         b = pw.chromium.launch(executable_path=CHROME, headless=True)
         ctx = b.new_context(accept_downloads=True); page = ctx.new_page()
         errors = []; page.on("pageerror", lambda e: errors.append(str(e)))
-        page.goto(URL)
+        page.goto(URL); page.evaluate("__i2d.tab('all')")
 
         def load(path, n=None):
             page.set_input_files("#fileIn", path)
