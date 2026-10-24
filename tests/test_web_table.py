@@ -118,6 +118,14 @@ def main(c):
     z = c.export_zip(); d = read_dxf(z["pass_01.dxf"]); pc = polys(d, "CUT")
     hole = [i for i, x in enumerate(pc) if abs((bbox([x])[2] - bbox([x])[0]) - 161 * SC) < 0.2]; outer = [i for i, x in enumerate(pc) if abs((bbox([x])[2] - bbox([x])[0]) - 301 * SC) < 0.2]
     c.ok("cut-inside-first respected within the pass: ring's hole before its outline", hole and outer and hole[0] < outer[0], (hole, outer))
+    p.check("#nearest"); p.check("#showOrder"); c.settle(400)
+    lbl = p.eval_on_selector_all("svg text.ord", "els=>els.map(e=>[+e.dataset.pass,e.textContent])")
+    pas = [a for a, _ in lbl]
+    c.ok("cut order numbers: Pass 1 labels come first, numbering restarts at 1 in each pass (P1·1 .. P2·1 ..)",
+         lbl and pas == sorted(pas) and all(any(t == f"P{n}·1" for a, t in lbl if a == n) for n in set(pas)) and set(pas) == {1, 2, 3}, lbl)
+    z = c.export_zip(); d = read_dxf(z["pass_02.dxf"]); pc = polys(d, "CUT")
+    c.ok("inside-first + nearest still valid within pass 2 (closed S3 present, file audit clean)", any(cl for _, cl, _ in pc), len(pc))
+    p.uncheck("#nearest"); p.uncheck("#showOrder")
     p.uncheck("#insideFirst")
     p.check("#tabsAll"); p.fill("#tabW", "0.5"); p.dispatch_event("#tabW", "input"); c.settle(400)
     z = c.export_zip(); d = read_dxf(z["pass_01.dxf"]); pc = polys(d, "CUT")

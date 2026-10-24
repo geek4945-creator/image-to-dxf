@@ -209,7 +209,7 @@
   // ------------------------------------------------------------------ cut ordering
   /** units: [{paths:[{pts,closed}], depth}]. Reorders (and rotates closed rings / cyclic tab segments to start nearest the
       previous end point) according to o.insideFirst (deepest nesting first) and o.nearest (greedy nearest neighbour). */
-  function orderUnits(units, o) {
+  function orderUnits(units, o, start) {
     const insideFirst = !!o.insideFirst, nearest = !!o.nearest;
     if (!insideFirst && !nearest) return units;
     const tiers = [];
@@ -217,7 +217,7 @@
       const by = new Map(); units.forEach(u => { if (!by.has(u.depth)) by.set(u.depth, []); by.get(u.depth).push(u); });
       [...by.keys()].sort((a, b) => b - a).forEach(d => tiers.push(by.get(d)));
     } else tiers.push(units.slice());
-    const out = []; let pos = [0, 0];
+    const out = []; let pos = start || [0, 0];
     for (const tier of tiers) {
       if (!nearest || tier.length > 6000) { tier.forEach(u => out.push(u)); if (tier.length) pos = endOf(tier[tier.length - 1]); continue; }
       const rest = tier.slice();
@@ -228,7 +228,7 @@
           for (let k = 0; k < cands.length; k++) { const d = (cands[k][0] - pos[0]) ** 2 + (cands[k][1] - pos[1]) ** 2; if (d < bd) { bd = d; bi = i; bk = k; } }
         }
         const u = rest.splice(bi, 1)[0];
-        if (u.paths.length === 1 && u.paths[0].closed) { const q = u.paths[0].pts; u.paths[0] = { pts: q.slice(bk).concat(q.slice(0, bk)), closed: true }; }
+        if (u.paths.length === 1 && u.paths[0].closed) { const q = u.paths[0].pts; u.paths[0] = Object.assign({}, u.paths[0], { pts: q.slice(bk).concat(q.slice(0, bk)), closed: true }); }
         else u.paths = u.paths.slice(bk).concat(u.paths.slice(0, bk));
         out.push(u); pos = endOf(u);
       }
@@ -500,6 +500,9 @@
         });
       });
     }
+    // cut order is per pass: Pass 1 is cut first, and inside each pass the order restarts at 1
+    // (inside-first / nearest-next applied within the pass, starting from the table origin of that pass)
+    passes.forEach(P => { P.ents = orderPass(P.ents, T, [P.ox, P.oy]); });
     // park + material move + registration marks
     const parkAt = P => T.park === "custom" ? [T.parkX || 0, T.parkY || 0] : [T.park[1] === "r" ? T.L : 0, T.park[0] === "t" ? T.H : 0];
     const mk = 0.25 * (T.unit === "in" ? 1 : 25.4), marks = [];
@@ -522,6 +525,15 @@
       P.move = N ? [-(N.ox - P.ox), -(N.oy - P.oy)] : null;       // material slide for the next pass
     });
     return { passes, cols, rows, warnings, box };
+  }
+  /** Re-order one pass' entities by unit (all pieces of one planned cut share e.seq) and number them 1..n (e.pseq). */
+  function orderPass(ents, T, start) {
+    const units = [], by = new Map();
+    ents.forEach((e, i) => { const k = e.seq != null ? "s" + e.seq : "x" + i; let u = by.get(k);
+      if (!u) { u = { depth: e.depth || 0, cid: e.cid, paths: [] }; by.set(k, u); units.push(u); } u.paths.push(Object.assign({}, e, { closed: e.closed !== false })); });
+    const ord = orderUnits(units, { insideFirst: !!T.insideFirst, nearest: !!T.nearest }, start), out = [];
+    ord.forEach((u, k) => u.paths.forEach(p => out.push(Object.assign({}, p, { pseq: k + 1 }))));
+    return out;
   }
   /** Translate a pass' entities into table coordinates ((0,0) = table lower-left of that pass). */
   const translateEnts = (ents, ox, oy) => ents.map(e => Object.assign({}, e, { pts: e.pts.map(([x, y]) => [x - ox, y - oy]) }));
@@ -598,7 +610,7 @@
     const plan = buildPlan(polys, o); let ents = plan.entities;
     const enc = new TextEncoder(), paths = ents.length;
     if (o.table && o.table.on) {
-      const tf = tableFiles(plan, o.table, nestRoots(polys), o.unit), ms = tf.files.map(f => measureDxf(f.text));
+      const tf = tableFiles(plan, Object.assign({}, o.table, { insideFirst: o.insideFirst, nearest: o.nearest }), nestRoots(polys), o.unit), ms = tf.files.map(f => measureDxf(f.text));
       const check = { polylines: ms.reduce((a, m) => a + m.polylines, 0), insunits: ms[0].insunits, unit: ms[0].unit, width: Math.max(...ms.map(m => m.width)), height: Math.max(...ms.map(m => m.height)),
         files: ms.length, perFile: ms.map((m, i) => ({ name: tf.files[i].name, width: m.width, height: m.height })), table: true, warnings: tf.sections.warnings };
       if (tf.files.length === 1) return { bytes: enc.encode(tf.files[0].text), mime: "application/dxf", filename: tf.files[0].name, paths, groups: plan.layers.length, plan, check, sections: tf.sections };

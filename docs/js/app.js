@@ -370,7 +370,7 @@ function updatePlan(){
   if(!need||!o.selected.length){ if(o.tabs) $('tabNote').textContent='Nothing selected for export.'; return; }
   try{ S.plan=D.buildPlan(S.paths,o); }catch(e){ $('tabNote').textContent=e.message; return; }
   if(o.table.on){
-    try{ S.sec=D.sectionize(S.plan.entities,Object.assign({unit:o.unit},o.table),rootsOf());
+    try{ S.sec=D.sectionize(S.plan.entities,Object.assign({unit:o.unit,insideFirst:o.insideFirst,nearest:o.nearest},o.table),rootsOf());
       const N=S.sec.passes.length, w=S.sec.warnings;
       $('tblNote').textContent=(N===1?'The job fits on the table: 1 pass (park marker still added).':`${N} passes (${S.sec.cols.length} × ${S.sec.rows.length}). Next to the preview: dashed frames = table position, shaded blocks = what each pass cuts.`)+(w.length?' ⚠ '+w.join(' ⚠ '):''); }
     catch(e){ $('tblNote').textContent='⚠ '+e.message; }
@@ -379,6 +379,7 @@ function updatePlan(){
   if(o.insideFirst||o.nearest) $('orderNote').textContent=`DXF entity order: ${o.insideFirst?`inner contours first (deepest nesting ${st.maxDepth} → 0)`:'file order'}${o.nearest?', nearest-neighbour within each level':''} · ${st.units} cut(s).`
     +($('ioLayers').checked&&o.split!=='none'?' (CUT_INNER/OUTER layers only apply to one-file mode)':'');
   else if($('ioLayers').checked&&o.split==='none') $('orderNote').textContent='';
+  if(S.sec&&S.sec.passes.length>1) $('orderNote').textContent+=` Table job: Pass 1 is cut first; numbering restarts in each pass (P1·1, P1·2 … P2·1 …).`;
   if(o.tabs) $('tabNote').textContent=`${st.tabbed} contour(s) get ${st.tabs} tab(s) of ${$('tabW').value} ${$('unit').value}`+(st.tabSkipped?` · ${st.tabSkipped} too small for tabs (left closed)`:'')+'.';
 }
 function recalc(){ $('dxfCheck').textContent=''; syncSize(); updatePlan(); renderSizeOut(); }       // scale -> plan -> readout, in that order
@@ -423,6 +424,13 @@ function renderSvg(){
     S.plan.gaps.forEach(g=>{ h+=`<polyline class="tabhalo" points="${g.pts.map(p=>toPx(p).join(',')).join(' ')}"/><polyline class="tabgap" points="${g.pts.map(p=>toPx(p).join(',')).join(' ')}"/>`; });
     if($('showOrder').checked){
       const k=S.W/(($('svg').getBoundingClientRect().width)||S.W), seen=new Set(); let n=0;
+      const sec=$('tblOn').checked&&S.sec&&S.sec.passes.length?S.sec:null;
+      if(sec){                                                                 // table job: numbers restart in every pass, Pass 1 first
+        const multi=sec.passes.length>1;
+        for(const P of sec.passes){ const pseen=new Set();
+          for(const e of P.ents){ if(e.cid<0||pseen.has(e.pseq)) continue; pseen.add(e.pseq); if(++n>800) break; const [x,y]=toPx(e.pts[0]);
+            h+=`<text class="ord" data-pass="${P.n}" x="${x}" y="${y}" style="font-size:${12*k}px">${multi?'P'+P.n+'·':''}${e.pseq}</text>`; } }
+      } else
       for(const e of S.plan.entities){ if(seen.has(e.seq)) continue; seen.add(e.seq); if(++n>800) break; const [x,y]=toPx(e.pts[0]);
         h+=`<text class="ord" x="${x}" y="${y}" style="font-size:${12*k}px">${e.seq}</text>`; }
     }
